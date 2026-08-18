@@ -1,3 +1,16 @@
+# Tesla BLE observer (Phase 1: scan-only spike). Gated by DASHKIT_TESLA_BLE so
+# a feature-off build drops the tesla/ modules and their observer-role
+# requirement entirely. tesla/tesla_ble_adapter.c depends on NimBLE's scan API
+# (observer role); tesla/tesla_advert_name.c is pure C (also used by the host
+# test suite).
+set(TESLA_SRCS "")
+if(CONFIG_DASHKIT_TESLA_BLE)
+    list(APPEND TESLA_SRCS
+        "tesla/tesla_advert_name.c"
+        "tesla/tesla_ble_adapter.c"
+    )
+endif()
+
 idf_component_register(
     SRCS
         "main.c"
@@ -14,6 +27,7 @@ idf_component_register(
         "automation/multi_finger.c"
         "ble/ble_server.c"
         "ble/ble_ota.c"
+        ${TESLA_SRCS}
     INCLUDE_DIRS
         "."
         "can"
@@ -21,6 +35,7 @@ idf_component_register(
         "controls"
         "automation"
         "ble"
+        "tesla"
     REQUIRES
         driver
         esp_adc

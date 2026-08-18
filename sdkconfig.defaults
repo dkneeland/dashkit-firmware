@@ -7,10 +7,15 @@ CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=3
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
-CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
+
+# Tesla BLE (vehicle-command) observer. Phase 1: scan-only — the device listens
+# for Tesla advertisements (peripheral + broadcaster roles unchanged). The
+# CENTRAL role arrives in Phase 2 with connect/discover.
+CONFIG_DASHKIT_TESLA_BLE=y
 
 # Partition table
 CONFIG_PARTITION_TABLE_CUSTOM=y
