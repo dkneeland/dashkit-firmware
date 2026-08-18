@@ -9,6 +9,7 @@
 #include "mcp251xfd.h"
 #include "ble_server.h"
 #include "ble_ota.h"
+#include "tesla_ble_adapter.h"
 
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -25,6 +26,13 @@
 
 #if !defined(CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE) || (CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE != 1)
 #error "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE must be enabled (a crashing OTA image would brick the device)"
+#endif
+
+// Tesla BLE observer relies on the NimBLE observer role (scan-only in Phase 1;
+// the CENTRAL requirement arrives with Phase 2 and gets its own guard there).
+#if defined(CONFIG_DASHKIT_TESLA_BLE) && \
+    (!defined(CONFIG_BT_NIMBLE_ROLE_OBSERVER) || (CONFIG_BT_NIMBLE_ROLE_OBSERVER != 1))
+#error "CONFIG_DASHKIT_TESLA_BLE requires CONFIG_BT_NIMBLE_ROLE_OBSERVER (set CONFIG_BT_NIMBLE_ROLE_OBSERVER=y)"
 #endif
 
 static const char *TAG = "main";
@@ -209,6 +217,24 @@ void app_main(void)
     ESP_ERROR_CHECK(ble_server_init());
     ESP_ERROR_CHECK(ble_ota_init());
     ESP_ERROR_CHECK(ble_server_start());
+
+#if defined(CONFIG_DASHKIT_TESLA_BLE)
+    // Boot canary for the Tesla link (plan §5): the observer role must be
+    // visibly present, and the missing link/key must not be silent. Phase 1 has
+    // no NVS state yet — pairing + storage land in Phase 3 — so the canary just
+    // reports role state and starts the observer. Central is an `n` Kconfig
+    // symbol in Phase 1 (not defined), hence the guard.
+    {
+        int central = 0;
+#if defined(CONFIG_BT_NIMBLE_ROLE_CENTRAL)
+        central = CONFIG_BT_NIMBLE_ROLE_CENTRAL;
+#endif
+        ESP_LOGI(TAG, "Tesla BLE: enabled (observer=%d, central=%d). "
+                      "Scan-only in Phase 1; no link/key yet (pairing is Phase 3)",
+                 CONFIG_BT_NIMBLE_ROLE_OBSERVER, central);
+    }
+    ESP_ERROR_CHECK(tesla_ble_adapter_init());
+#endif
 
     // Bridge task: CAN -> BLE
     xTaskCreatePinnedToCore(can_to_ble_task, "can2ble", 8192, NULL, 5, NULL, 0);

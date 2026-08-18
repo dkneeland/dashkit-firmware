@@ -86,3 +86,6 @@ jobs:
 
       - name: Run Tesla crypto known-answer tests
         run: bash tools/test/run_tesla_crypto_test.sh
+
+      - name: Run Tesla advertisement-name matcher tests (Phase 1)
+        run: bash tools/test/run_tesla_advert_name_test.sh
