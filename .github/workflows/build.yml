@@ -89,3 +89,6 @@ jobs:
 
       - name: Run Tesla advertisement-name matcher tests (Phase 1)
         run: bash tools/test/run_tesla_advert_name_test.sh
+
+      - name: Run Tesla Phase 2 protocol round-trip tests (handshake/command/response)
+        run: bash tools/test/run_tesla_session_test.sh

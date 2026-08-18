@@ -1,13 +1,16 @@
-# Tesla BLE observer (Phase 1: scan-only spike). Gated by DASHKIT_TESLA_BLE so
-# a feature-off build drops the tesla/ modules and their observer-role
-# requirement entirely. tesla/tesla_ble_adapter.c depends on NimBLE's scan API
-# (observer role); tesla/tesla_advert_name.c is pure C (also used by the host
-# test suite).
+# Tesla BLE vehicle-command client (Phase 2: central connect + VCSEC handshake
+# + GET_STATUS). Gated by DASHKIT_TESLA_BLE so a feature-off build drops the
+# tesla/ modules, the observer *and* central roles, and the storage dependency.
+# tesla_ble_adapter depends on NimBLE's scan/central API; tesla_advert_name is
+# pure C (used by the host test suite); tesla_ble_storage uses NVS;
+# tesla_ble_client uses the tesla-protocol session/protobuf layers.
 set(TESLA_SRCS "")
 if(CONFIG_DASHKIT_TESLA_BLE)
     list(APPEND TESLA_SRCS
         "tesla/tesla_advert_name.c"
         "tesla/tesla_ble_adapter.c"
+        "tesla/tesla_ble_storage.c"
+        "tesla/tesla_ble_client.c"
     )
 endif()
 
@@ -43,8 +46,10 @@ idf_component_register(
         bt
         esp_timer
         app_update
-        # Tesla vehicle-command crypto/protocol component (Phase 0: crypto +
-        # session layers; no BLE wiring yet).
+        # Tesla vehicle-command protocol component (committed nanopb bindings +
+        # crypto/session/protobuf-build). mbedtls is an explicit dependency of
+        # the main component because the Tesla client drives the crypto layer.
+        mbedtls
         tesla-protocol
 )
 
