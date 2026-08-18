@@ -2,8 +2,6 @@
 
 #include <string.h>
 
-#include "mbedtls/md.h"
-
 // ------- Metadata TLV serialization -------
 
 void tesla_metadata_init(tesla_metadata_t *m)
@@ -77,7 +75,6 @@ int tesla_session_info_tag(const uint8_t k[TESLA_SHARED_KEY_LEN],
     uint8_t session_key[TESLA_HMAC_LEN];
     uint8_t sig_type = TESLA_SIG_TYPE_HMAC;
     int rc;
-    mbedtls_md_context_t hmac;
 
     rc = tesla_session_info_key(k, session_key);
     if (rc != 0) {
@@ -101,22 +98,8 @@ int tesla_session_info_tag(const uint8_t k[TESLA_SHARED_KEY_LEN],
     }
 
     // tag = HMAC(SESSION_INFO_KEY, M || encoded_info)
-    mbedtls_md_init(&hmac);
-    rc = mbedtls_md_setup(&hmac, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
-    if (rc == 0) {
-        rc = mbedtls_md_hmac_starts(&hmac, session_key, sizeof(session_key));
-    }
-    if (rc == 0) {
-        rc = mbedtls_md_hmac_update(&hmac, m, m_len);
-    }
-    if (rc == 0) {
-        rc = mbedtls_md_hmac_update(&hmac, encoded_info, encoded_info_len);
-    }
-    if (rc == 0) {
-        rc = mbedtls_md_hmac_finish(&hmac, tag);
-    }
-    mbedtls_md_free(&hmac);
-    return rc;
+    return tesla_hmac_sha256_2(session_key, sizeof(session_key),
+                               m, m_len, encoded_info, encoded_info_len, tag);
 }
 
 bool tesla_verify_session_info(const uint8_t k[TESLA_SHARED_KEY_LEN],
@@ -143,7 +126,7 @@ int tesla_build_request_metadata(tesla_metadata_t *m, uint8_t domain,
                                  const uint8_t *vin, size_t vin_len,
                                  const uint8_t epoch[TESLA_EPOCH_LEN],
                                  uint32_t expires_at, uint32_t counter,
-                                 uint8_t flags)
+                                 uint32_t flags)
 {
     uint8_t sig_type = TESLA_SIG_TYPE_AES_GCM_PERSONALIZED;
     int rc;
@@ -174,7 +157,7 @@ int tesla_build_request_metadata(tesla_metadata_t *m, uint8_t domain,
 
 int tesla_build_response_metadata(tesla_metadata_t *m, uint8_t domain,
                                   const uint8_t *vin, size_t vin_len,
-                                  uint32_t counter, uint8_t flags,
+                                  uint32_t counter, uint32_t flags,
                                   const uint8_t *request_hash, size_t request_hash_len,
                                   uint32_t fault)
 {

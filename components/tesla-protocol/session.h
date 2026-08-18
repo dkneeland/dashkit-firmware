@@ -53,8 +53,11 @@
 #define TESLA_METADATA_MAX 128
 
 // Tag-length-value metadata serializer. Tags must be added in strictly
-// ascending order (mirrors the reference implementation); a value longer than
-// 255 bytes is rejected because the TLV length field is a single byte.
+// ascending order. This is deliberately stricter than the reference
+// implementation, which permits duplicate tags: the serialization stays
+// injective (no two metadata sets collide), which the protocol relies on. A
+// value longer than 255 bytes is rejected because the TLV length field is a
+// single byte.
 typedef struct {
     uint8_t buf[TESLA_METADATA_MAX];
     size_t  len;
@@ -97,19 +100,19 @@ bool tesla_verify_session_info(const uint8_t k[TESLA_SHARED_KEY_LEN],
 
 // Serialized metadata for an outgoing AES-GCM command. The AAD for encryption
 // is SHA256(serialized). flags is only encoded when non-zero (backwards
-// compatibility rule in protocol.md).
+// compatibility rule in protocol.md); it is a full 32-bit value on the wire.
 int tesla_build_request_metadata(tesla_metadata_t *m, uint8_t domain,
                                  const uint8_t *vin, size_t vin_len,
                                  const uint8_t epoch[TESLA_EPOCH_LEN],
                                  uint32_t expires_at, uint32_t counter,
-                                 uint8_t flags);
+                                 uint32_t flags);
 
 // Serialized metadata for decrypting an encrypted response (AAD = SHA256(serialized)).
 // Per protocol.md the Flags field is always included here (unlike requests) and
 // the fault is always encoded (0 when none).
 int tesla_build_response_metadata(tesla_metadata_t *m, uint8_t domain,
                                   const uint8_t *vin, size_t vin_len,
-                                  uint32_t counter, uint8_t flags,
+                                  uint32_t counter, uint32_t flags,
                                   const uint8_t *request_hash, size_t request_hash_len,
                                   uint32_t fault);
 

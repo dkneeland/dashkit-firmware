@@ -78,5 +78,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache mbedTLS host build
+        uses: actions/cache@v4
+        with:
+          path: build/tesla-host-test
+          key: mbedtls-host-${{ runner.os }}-3.6.2
+
       - name: Run Tesla crypto known-answer tests
         run: bash tools/test/run_tesla_crypto_test.sh

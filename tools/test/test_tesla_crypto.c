@@ -127,12 +127,9 @@ static const char CIPHERTEXT_HEX[] = "38038e8c0f2e";
 static const char GCM_TAG_HEX[]    = "c228e0ff64991481db3a7bbc133696c5";
 
 // Metadata SHA-256 checksum vector from vehicle-command metadata_test.go.
-static const char META2_ITEMS[][64] = {
-    "05", "02", "testVIN",
-    "aada928a4f215f55f9e6e45e66b6521e",   // epoch
-    "00000e74",                            // expires_at = 3700
-    "0000053a",                            // counter = 1338
-};
+// Item set: sig_type=0x05, domain=0x02, personalization="testVIN",
+// epoch, expires_at=3700, counter=1338.
+static const char META2_EPOCH_HEX[] = "aada928a4f215f55f9e6e45e66b6521e";
 static const char META2_SHA256_HEX[] =
     "abab04d804499813382efd74a06791ce2de777439603246dfbaa8392ca05868e";
 
@@ -160,6 +157,22 @@ static void test_hashes_and_hmac(void)
     tesla_hmac_sha256(key, sizeof(key) - 1, (const uint8_t *)msg, sizeof(msg) - 1, d);
     CHECK(check_hex(d, TESLA_HMAC_LEN, HMAC_FOX_HEX),
           "hmac_sha256(key=\"key\", fox) matches standard vector");
+
+    // Two-part HMAC must equal the one-shot HMAC over the concatenation.
+    {
+        uint8_t key2[16];
+        uint8_t d1[TESLA_HMAC_LEN], d2[TESLA_HMAC_LEN];
+        static const uint8_t a[] = "foo";
+        static const uint8_t b[] = "bar";
+        uint8_t ab[sizeof(a) - 1 + sizeof(b) - 1];
+        memset(key2, 0x11, sizeof(key2));
+        memcpy(ab, a, sizeof(a) - 1);
+        memcpy(ab + sizeof(a) - 1, b, sizeof(b) - 1);
+        tesla_hmac_sha256_2(key2, sizeof(key2), a, sizeof(a) - 1, b, sizeof(b) - 1, d1);
+        tesla_hmac_sha256(key2, sizeof(key2), ab, sizeof(ab), d2);
+        CHECK(bytes_eq(d1, d2, TESLA_HMAC_LEN),
+              "hmac_sha256_2(a, b) equals one-shot hmac over a||b");
+    }
 }
 
 static void test_ct_equal(void)
@@ -199,6 +212,15 @@ static void test_derive_shared_key(void)
     memset(bad, 0x00, sizeof(bad));
     CHECK(tesla_derive_shared_key(priv, bad, dummy_rng, NULL, k) != 0,
           "invalid peer public key rejected");
+
+    // A well-formed (0x04-prefixed) but off-curve point must also be
+    // rejected, not just unparseable input.
+    uint8_t offcurve[TESLA_PUBKEY_LEN];
+    CHECK(unhex(CLIENT_PUB_HEX, offcurve, sizeof(offcurve)) == TESLA_PUBKEY_LEN,
+          "decode client pub for off-curve test");
+    offcurve[64] ^= 0x01;   // corrupt Y: no longer satisfies y^2 = x^3 - 3x + b
+    CHECK(tesla_derive_shared_key(priv, offcurve, dummy_rng, NULL, k) != 0,
+          "off-curve peer public key rejected");
 
     // mbedTLS 3.x requires the RNG for ECDH blinding.
     CHECK(tesla_derive_shared_key(priv, pub, NULL, NULL, k) != 0,
@@ -272,7 +294,7 @@ static void test_metadata_checksum(void)
     size_t ser_len;
     uint8_t digest[TESLA_SHA256_LEN];
 
-    unhex(META2_ITEMS[3], epoch, sizeof(epoch));
+    unhex(META2_EPOCH_HEX, epoch, sizeof(epoch));
     tesla_metadata_init(&m);
     CHECK(tesla_metadata_add(&m, TESLA_META_TAG_SIGNATURE_TYPE,
                              (const uint8_t[]){ 0x05 }, 1) == 0, "add sig type");
@@ -435,9 +457,11 @@ static void test_roundtrip(void)
     CHECK(rc == 0 && bytes_eq(back, pt, (size_t)pt_len),
           "vehicle verifies the command");
 
-    // --- Request hash: [sig_type 0x05] || AES-GCM tag (17 bytes) ---
+    // --- Request hash: [sig_type 0x05] || AES-GCM tag (17 bytes). Truncation
+    // is a Vehicle-Security-domain rule; AES-GCM tags are 16 bytes so it is a
+    // no-op here either way (see test_request_hash for the HMAC cases). ---
     CHECK(tesla_request_hash(TESLA_SIG_TYPE_AES_GCM_PERSONALIZED, tag, sizeof(tag),
-                             true, req_hash, &req_hash_len) == 0 &&
+                             false, req_hash, &req_hash_len) == 0 &&
           req_hash_len == 17 && req_hash[0] == TESLA_SIG_TYPE_AES_GCM_PERSONALIZED,
           "request hash = [0x05]||tag, 17 bytes");
 

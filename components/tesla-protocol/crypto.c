@@ -30,6 +30,33 @@ int tesla_hmac_sha256(const uint8_t *key, size_t key_len,
                            key, key_len, msg, msg_len, out);
 }
 
+// HMAC over two non-contiguous parts (the protocol's "M || payload" shape).
+int tesla_hmac_sha256_2(const uint8_t *key, size_t key_len,
+                        const uint8_t *a, size_t a_len,
+                        const uint8_t *b, size_t b_len,
+                        uint8_t out[TESLA_HMAC_LEN])
+{
+    int rc;
+    mbedtls_md_context_t md;
+
+    mbedtls_md_init(&md);
+    rc = mbedtls_md_setup(&md, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+    if (rc == 0) {
+        rc = mbedtls_md_hmac_starts(&md, key, key_len);
+    }
+    if (rc == 0) {
+        rc = mbedtls_md_hmac_update(&md, a, a_len);
+    }
+    if (rc == 0) {
+        rc = mbedtls_md_hmac_update(&md, b, b_len);
+    }
+    if (rc == 0) {
+        rc = mbedtls_md_hmac_finish(&md, out);
+    }
+    mbedtls_md_free(&md);
+    return rc;
+}
+
 bool tesla_ct_equal(const uint8_t *a, const uint8_t *b, size_t len)
 {
     return mbedtls_ct_memcmp(a, b, len) == 0;
@@ -71,6 +98,14 @@ int tesla_derive_shared_key(const uint8_t priv[TESLA_PRIVKEY_LEN],
     }
 
     rc = mbedtls_ecp_point_read_binary(&grp, &peer, peer_pub, TESLA_PUBKEY_LEN);
+    if (rc != 0) {
+        goto out;
+    }
+
+    // read_binary only decodes the point; reject points that do not satisfy
+    // the curve equation (invalid-curve hardening, mirroring the reference
+    // implementation which rejects off-curve peers).
+    rc = mbedtls_ecp_check_pubkey(&grp, &peer);
     if (rc != 0) {
         goto out;
     }

@@ -2,8 +2,9 @@
 
 Tesla vehicle-command protocol support for DashKit, built as an auto-discovered
 ESP-IDF component. Implements the client side of the vehicle-command BLE
-protocol per the [integration plan](../../docs/tesla-ble-integration-plan.md)
-and [ADR 0001](../../docs/adr/0001-tesla-ble-integration.md).
+protocol per the Tesla BLE integration plan and ADR 0001 (the plan document
+and ADR live in the docs/ directory of the parent workspace that contains this
+firmware tree).
 
 ## Layout
 

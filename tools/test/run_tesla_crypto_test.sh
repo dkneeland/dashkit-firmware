@@ -12,6 +12,9 @@ set -euo pipefail
 
 MBEDTLS_VERSION=3.6.2
 MBEDTLS_URL="https://github.com/Mbed-TLS/mbedtls/archive/refs/tags/v${MBEDTLS_VERSION}.tar.gz"
+# SHA-256 of the v3.6.2 source tarball (verify on every run so a partial or
+# tampered download is never trusted).
+MBEDTLS_SHA256="f4a876b1f6921ad0aefb445f974ef62414d33928640b2c45555c5e64a196a1a8"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -24,7 +27,13 @@ mkdir -p "${WORK}"
 
 if [ ! -f "${TARBALL}" ]; then
     echo "==> Downloading mbedTLS ${MBEDTLS_VERSION}"
-    curl -fL -o "${TARBALL}" "${MBEDTLS_URL}"
+    curl -fL --retry 3 -o "${TARBALL}" "${MBEDTLS_URL}"
+fi
+
+echo "==> Verifying mbedTLS tarball checksum"
+if ! echo "${MBEDTLS_SHA256}  ${TARBALL}" | sha256sum -c - >/dev/null; then
+    echo "mbedTLS tarball checksum mismatch; delete ${TARBALL} and re-run" >&2
+    exit 1
 fi
 
 if [ ! -d "${SRC}" ]; then

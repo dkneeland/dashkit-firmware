@@ -46,6 +46,12 @@ int tesla_sha256(const uint8_t *data, size_t len, uint8_t out[TESLA_SHA256_LEN])
 int tesla_hmac_sha256(const uint8_t *key, size_t key_len,
                       const uint8_t *msg, size_t msg_len,
                       uint8_t out[TESLA_HMAC_LEN]);
+// HMAC-SHA256 over two non-contiguous parts, equivalent to hashing the
+// concatenation. Used for the protocol's "M || payload" patterns.
+int tesla_hmac_sha256_2(const uint8_t *key, size_t key_len,
+                        const uint8_t *a, size_t a_len,
+                        const uint8_t *b, size_t b_len,
+                        uint8_t out[TESLA_HMAC_LEN]);
 
 // Constant-time comparison for HMAC/GCM tag validation.
 // Returns true iff a and b are identical over len bytes.
@@ -53,9 +59,11 @@ bool tesla_ct_equal(const uint8_t *a, const uint8_t *b, size_t len);
 
 // K = SHA1(X-coordinate of ECDH(priv, peer_pub))[:16].
 //
-// f_rng feeds mbedTLS' ECDH blinding (mandatory in mbedTLS 3.x); correctness
-// of the shared secret does not depend on RNG quality. The firmware passes a
-// hardware-RNG-backed callback; the host test passes a deterministic one.
+// The peer public key is checked to be a valid point on NIST-P256 before the
+// scalar multiply (invalid-curve hardening). f_rng feeds mbedTLS' ECDH
+// blinding (mandatory in mbedTLS 3.x); correctness of the shared secret does
+// not depend on RNG quality. The firmware passes a hardware-RNG-backed
+// callback; the host test passes a deterministic one.
 int tesla_derive_shared_key(const uint8_t priv[TESLA_PRIVKEY_LEN],
                             const uint8_t peer_pub[TESLA_PUBKEY_LEN],
                             tesla_rng_fn f_rng, void *p_rng,
