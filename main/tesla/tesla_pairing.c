@@ -88,26 +88,19 @@ static void pairing_rx_cb(const uint8_t *data, size_t len, void *arg)
 static esp_err_t pairing_recv(uint8_t *buf, size_t cap, size_t *out_len,
                               uint32_t timeout_ms)
 {
-    uint32_t start = xTaskGetTickCount();
-    uint32_t total = pdMS_TO_TICKS(timeout_ms);
+    pairing_frame_t f;
 
-    for (;;) {
-        pairing_frame_t f;
-        uint32_t elapsed = (uint32_t)(xTaskGetTickCount() - start);
-        uint32_t remain = (elapsed < total) ? total - elapsed : 0;
-
-        if (xQueueReceive(s_rxq, &f, (TickType_t)remain) != pdTRUE) {
-            return ESP_ERR_TIMEOUT;
-        }
-        if (f.len > cap) {
-            return ESP_ERR_INVALID_SIZE;
-        }
-        memcpy(buf, f.data, f.len);
-        if (out_len != NULL) {
-            *out_len = f.len;
-        }
-        return ESP_OK;
+    if (xQueueReceive(s_rxq, &f, (TickType_t)pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
     }
+    if (f.len > cap) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    memcpy(buf, f.data, f.len);
+    if (out_len != NULL) {
+        *out_len = f.len;
+    }
+    return ESP_OK;
 }
 
 // Classify a response frame. Returns 1 on terminal success (the whitelist
@@ -175,7 +168,7 @@ static int pairing_ingest(const uint8_t *frame, size_t len, uint32_t *info_out)
 // car address are persisted. Persists VIN + address first and the key last, so
 // the key blob is the "enrollment complete" flag (a half-written key can't
 // wedge the client into a key-without-config state).
-esp_err_t tesla_pairing_enroll(const tesla_keypair_t *key,
+static esp_err_t tesla_pairing_enroll(const tesla_keypair_t *key,
                                const char *vin, const tesla_car_addr_t *addr)
 {
     if (key == NULL || vin == NULL || strlen(vin) != 17 || addr == NULL) {

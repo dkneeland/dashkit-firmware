@@ -57,9 +57,6 @@ esp_err_t tesla_storage_save_vin(const char *vin);
 esp_err_t tesla_storage_load_car_addr(tesla_car_addr_t *addr);
 esp_err_t tesla_storage_save_car_addr(const tesla_car_addr_t *addr);
 
-// Remove all Tesla state (factory reset / re-pair flow, Phase 3+).
-void tesla_storage_erase_all(void);
-
 // ---- Onboard advertisement-name log (in-car diagnostic) ----
 //
 // Records EVERY distinct BLE local name the observer sees (not just Tesla
@@ -83,7 +80,6 @@ typedef struct {
 void tesla_advert_log_add(const uint8_t *name, size_t name_len, uint8_t matched,
                           uint8_t format, const uint8_t mac[6], int8_t rssi);
 void tesla_advert_log_dump(void);
-void tesla_advert_log_clear(void);
 
 // Persist and return a monotonically increasing boot counter. Confirms the
 // board actually powered up during an unattended run (e.g. in the car): it

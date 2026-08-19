@@ -46,14 +46,6 @@ bool tesla_pairing_is_target_vehicle(const char *name, size_t name_len);
 esp_err_t tesla_pairing_observe_vehicle(const char *name, size_t name_len,
                                         const tesla_car_addr_t *addr);
 
-// One-shot enrollment attempt for the already-generated `key` against the car
-// at `addr` (owned by the pairing task; also exposed for direct use). Returns
-// ESP_OK only after the car confirms the key is enrolled (i.e. the owner tapped
-// + approved). On success the keypair, VIN, and car address are persisted for
-// the client poll loop.
-esp_err_t tesla_pairing_enroll(const tesla_keypair_t *key,
-                               const char *vin, const tesla_car_addr_t *addr);
-
 #ifdef __cplusplus
 }
 #endif

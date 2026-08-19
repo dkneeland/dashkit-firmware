@@ -161,16 +161,9 @@ esp_err_t tesla_storage_save_car_addr(const tesla_car_addr_t *addr)
     return err;
 }
 
-void tesla_storage_erase_all(void)
-{
-    nvs_handle_t h;
-
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_erase_all(h);
-        nvs_commit(h);
-        nvs_close(h);
-    }
-}
+// Remove all Tesla state (factory reset / re-pair flow) is intentionally not
+// wired yet: it will be exposed behind a Phase 4 console command / app
+// `pair`-reset write rather than shipping dead today.
 
 // ---- Onboard advertisement-name log ----
 //
@@ -320,17 +313,6 @@ void tesla_advert_log_dump(void)
                  (int)en->rssi, (unsigned)en->count, (unsigned)en->time_s);
     }
     free(log);
-}
-
-void tesla_advert_log_clear(void)
-{
-    nvs_handle_t h;
-
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_erase_key(h, KEY_BEACON);
-        nvs_commit(h);
-        nvs_close(h);
-    }
 }
 
 uint32_t tesla_storage_boot_count(void)
