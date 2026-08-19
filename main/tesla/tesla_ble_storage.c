@@ -15,6 +15,7 @@ static const char *KEY_PUB    = "pub";
 static const char *KEY_VIN    = "vin";
 static const char *KEY_ADDR   = "addr";
 static const char *KEY_BEACON = "beacon_log";
+static const char *KEY_BOOTCNT = "bootcnt";
 
 bool tesla_storage_has_key(void)
 {
@@ -261,8 +262,12 @@ void tesla_advert_log_add(const uint8_t *name, size_t name_len, uint8_t matched,
     en->count    = 1;
     en->time_s   = (uint32_t)(esp_timer_get_time() / 1000000);
 
-    if (nvs_set_blob(h, KEY_BEACON, &log, ADVERT_LOG_NSZ) == ESP_OK) {
-        nvs_commit(h);
+    esp_err_t e = nvs_set_blob(h, KEY_BEACON, &log, ADVERT_LOG_NSZ);
+    if (e == ESP_OK) {
+        e = nvs_commit(h);
+    }
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "advert log persist failed: %s", esp_err_to_name(e));
     }
     nvs_close(h);
 }
@@ -303,4 +308,24 @@ void tesla_advert_log_clear(void)
         nvs_commit(h);
         nvs_close(h);
     }
+}
+
+uint32_t tesla_storage_boot_count(void)
+{
+    nvs_handle_t h;
+    uint32_t n = 0;
+
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_get_u32(h, KEY_BOOTCNT, &n);
+        n++;
+        esp_err_t e = nvs_set_u32(h, KEY_BOOTCNT, n);
+        if (e == ESP_OK) {
+            e = nvs_commit(h);
+        }
+        if (e != ESP_OK) {
+            ESP_LOGE(TAG, "boot count persist failed: %s", esp_err_to_name(e));
+        }
+        nvs_close(h);
+    }
+    return n;
 }

@@ -83,6 +83,12 @@ void tesla_advert_log_add(const uint8_t *name, size_t name_len, uint8_t matched,
 void tesla_advert_log_dump(void);
 void tesla_advert_log_clear(void);
 
+// Persist and return a monotonically increasing boot counter. Confirms the
+// board actually powered up during an unattended run (e.g. in the car): it
+// advances every boot regardless of BLE or advert-log writes, so a missing
+// run shows up as a gap in the sequence when reading the logs back.
+uint32_t tesla_storage_boot_count(void);
+
 #ifdef __cplusplus
 }
 #endif
