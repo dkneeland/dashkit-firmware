@@ -58,6 +58,29 @@ esp_err_t tesla_storage_save_car_addr(const tesla_car_addr_t *addr);
 // Remove all Tesla state (used by a factory reset / re-pair flow in Phase 3+).
 void tesla_storage_erase_all(void);
 
+// ---- Onboard Tesla-beacon detection log (in-car trust test) ----
+//
+// The central adapter records every Tesla-format match (dedup by MAC+name) into
+// an NVS ring so you can power the board near a car with NO live serial monitor
+// and read what it saw afterwards: on the next boot tesla_beacon_log_dump()
+// prints the previous run's detections to serial. This is a lightweight test
+// aid, not a telemetry subsystem.
+#define TESLA_BEACON_LOG_MAX 32
+typedef struct {
+    uint8_t  name[16];
+    uint8_t  name_len;
+    uint8_t  format;      // tesla_name_format (1=legacy, 2=modern)
+    uint8_t  mac[6];
+    int8_t   rssi;        // dBm
+    uint8_t  _pad;
+    uint32_t time_s;      // seconds since boot when seen
+} __attribute__((packed)) tesla_beacon_log_entry_t;
+
+void tesla_beacon_log_add(const uint8_t *name, size_t name_len, uint8_t format,
+                          const uint8_t mac[6], int8_t rssi);
+void tesla_beacon_log_dump(void);
+void tesla_beacon_log_clear(void);
+
 #ifdef __cplusplus
 }
 #endif
