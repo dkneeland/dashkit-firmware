@@ -47,11 +47,13 @@ static int name_is_legacy(const uint8_t *name, size_t len)
 
 /* Modern: "Tesla " + 4..6 VIN-alphabet chars.
  *
- * The documented format is "Tesla <last 6 of VIN>", but some vehicles split
- * the name across Complete+Shortened name AD types or advertise a shorter
- * suffix, so accept a 4..6 character tail rather than the strict 6. Every
- * byte must be a valid VIN character so random "Tesla ..." names can never
- * false-positive. */
+ * The documented format is "Tesla <last 6 of VIN>", but some vehicles
+ * advertise a shorter suffix, so accept a 4..6 character tail rather than the
+ * strict 6. (This tolerance is for shorter suffixes only — the BLE stack
+ * delivers at most one name AD element, so a name can never be "split" across
+ * Complete+Shortened name types; if you ever see a split name it must be
+ * handled in the adapter, not here.) Every byte must be a valid VIN character
+ * so random "Tesla ..." names can never false-positive. */
 static int name_is_modern(const uint8_t *name, size_t len)
 {
     static const char prefix[] = "Tesla ";

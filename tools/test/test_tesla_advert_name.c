@@ -81,6 +81,10 @@ static void check_legacy(void)
           "legacy: too long rejected");
     CHECK(tesla_advert_name_format((const uint8_t *)"Sabcd123ZC", 10) == TESLA_NAME_NONE,
           "legacy: non-hex hash field rejected");
+    CHECK(tesla_advert_name_format((const uint8_t *)"Sabcd1234c", 10) == TESLA_NAME_NONE,
+          "legacy: lowercase trailing role char rejected (case-sensitive)");
+    CHECK(tesla_advert_name_format((const uint8_t *)"Xabcd1234C", 10) == TESLA_NAME_NONE,
+          "legacy: non-'S' first byte rejected");
 }
 
 static void check_modern(void)
@@ -91,16 +95,32 @@ static void check_modern(void)
           "modern: mixed alnum tail");
     CHECK(tesla_advert_name_format((const uint8_t *)"Tesla 5YJ3", 10) == TESLA_NAME_MODERN,
           "modern: shorter 4-char tail accepted");
+    CHECK(tesla_advert_name_format((const uint8_t *)"Tesla 12A34", 11) == TESLA_NAME_MODERN,
+          "modern: 5-char tail (mid-boundary) accepted");
+    CHECK(tesla_advert_name_format((const uint8_t *)"Tesla 123456", 12) == TESLA_NAME_MODERN,
+          "modern: pure-digit tail accepted (realistic VIN last-6)");
     CHECK(tesla_advert_name_format((const uint8_t *)"Tesla A1", 8) == TESLA_NAME_NONE,
           "modern: tail too short rejected");
     CHECK(tesla_advert_name_format((const uint8_t *)"Tesla A1B2C3D4E5F6", 15) == TESLA_NAME_NONE,
           "modern: tail too long rejected");
     CHECK(tesla_advert_name_format((const uint8_t *)"Tesla ABC!", 10) == TESLA_NAME_NONE,
           "modern: non-VIN tail char rejected");
+    CHECK(tesla_advert_name_format((const uint8_t *)"Tesla abcdef", 12) == TESLA_NAME_NONE,
+          "modern: lowercase tail rejected (VIN chars are uppercase)");
     CHECK(tesla_advert_name_format((const uint8_t *)"tesla A1B2C3", 12) == TESLA_NAME_NONE,
           "modern: lowercase prefix rejected");
     CHECK(tesla_advert_name_format((const uint8_t *)"TeslaA1B2C3", 11) == TESLA_NAME_NONE,
           "modern: missing space rejected");
+}
+
+static void check_edges(void)
+{
+    CHECK(tesla_advert_name_format(NULL, 0) == TESLA_NAME_NONE,
+          "NULL/0-length input rejected");
+    CHECK(tesla_advert_name_format(NULL, 5) == TESLA_NAME_NONE,
+          "NULL with nonzero length rejected");
+    CHECK(tesla_advert_name_format((const uint8_t *)"", 0) == TESLA_NAME_NONE,
+          "empty input rejected");
 }
 
 static void check_derive_accept(void)
@@ -133,6 +153,7 @@ int main(int argc, char **argv)
     check_vin_char();
     check_legacy();
     check_modern();
+    check_edges();
     check_derive_accept();
 
     if (argc > 1) {

@@ -109,7 +109,12 @@ static esp_err_t start_scan(void)
         own_addr_type = BLE_OWN_ADDR_PUBLIC;
     }
     memset(&params, 0, sizeof(params));
-    params.passive = 1;
+    // Active scan: the local name may be delivered in ADV_IND or SCAN_RSP,
+    // and passive scanning only ever sees the former (review finding). Active
+    // scanning sends a SCAN_REQ and so surfaces either case. Harmless here —
+    // DashKit already advertises as a peripheral, so the extra scan requests
+    // don't conflict.
+    params.passive = 0;
     params.filter_duplicates = 1;
     params.filter_policy = BLE_HCI_SCAN_FILT_NO_WL;
 
@@ -129,15 +134,30 @@ static esp_err_t start_scan(void)
 static void scan_wait_task(void *arg)
 {
     (void)arg;
-    while (!ble_hs_synced()) {
-        vTaskDelay(pdMS_TO_TICKS(50));
+    for (;;) {
+        // Wait for a synced host. A host/controller reset drops sync and
+        // re-enters this loop, so the observer re-arms itself after a reset
+        // instead of silently never scanning again. ble_server.c's on_sync()
+        // only restarts advertising and is peripheral-only, so the Tesla scan
+        // can't lean on it (and this module must not touch ble_hs_cfg).
+        while (!ble_hs_synced()) {
+            s_central.observer_running = false;
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+        if (!s_central.observer_running) {
+            if (start_scan() == ESP_OK) {
+                s_central.observer_running = true;
+            } else {
+                ESP_LOGE(TAG, "Tesla observer failed to start scanning");
+            }
+        }
+        // Park until sync is lost (host reset) or the central path has taken
+        // over the controller. The central idle-disconnect re-arms the scan in
+        // central_fail_cleanup(), so there is nothing to do here meanwhile.
+        while (ble_hs_synced()) {
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
     }
-    if (start_scan() == ESP_OK) {
-        s_central.observer_running = true;
-    } else {
-        ESP_LOGE(TAG, "Tesla observer failed to start scanning");
-    }
-    vTaskDelete(NULL);
 }
 
 esp_err_t tesla_ble_adapter_observer_init(void)
