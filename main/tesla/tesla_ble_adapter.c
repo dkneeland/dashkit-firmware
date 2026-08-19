@@ -88,10 +88,13 @@ static int discovery_event_handler(struct ble_gap_event *event, void *arg)
         return 0;
     }
     mac = disc->addr.val;
-    ESP_LOGI(TAG, "Tesla vehicle found: name=\"%.*s\" (format=%s), "
-                  "MAC=%02X:%02X:%02X:%02X:%02X:%02X",
-             (int)fields.name_len, (const char *)fields.name,
-             fmt_str[fmt], mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
+    // The name/format is the feature's primary output, so keep it at INFO.
+    // The full MAC is more identifying (a beacon is linkable across scans),
+    // so gate it behind debug per the review privacy note.
+    ESP_LOGI(TAG, "Tesla vehicle found: name=\"%.*s\" (format=%s)",
+             (int)fields.name_len, (const char *)fields.name, fmt_str[fmt]);
+    ESP_LOGD(TAG, "  MAC=%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
     return 0;
 }
 
@@ -117,6 +120,12 @@ static esp_err_t start_scan(void)
     params.passive = 0;
     params.filter_duplicates = 1;
     params.filter_policy = BLE_HCI_SCAN_FILT_NO_WL;
+    // Explicit scan cadence (0.625 ms units): ~30 ms interval, ~12.5 ms
+    // window. Window < interval so the forever-scan doesn't run at full duty;
+    // before, these were left 0 and silently picked up NimBLE's fast-scan
+    // defaults.
+    params.itvl = 0x30;      /* 0x30 * 0.625 ms = 30 ms scan interval */
+    params.window = 0x14;    /* 0x14 * 0.625 ms = 12.5 ms active window */
 
     rc = ble_gap_disc(own_addr_type, BLE_HS_FOREVER, &params,
                       discovery_event_handler, NULL);

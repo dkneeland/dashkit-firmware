@@ -46,6 +46,10 @@ static void legacy_name(const char *vin, char fmt_char, char out[11])
 static void modern_name(const char *vin, char out[13])
 {
     size_t n = strlen(vin);
+    // NOTE: this helper is only ever called with a full 17-char VIN. For a
+    // shorter input it would emit "Tesla " + a too-short tail, which the
+    // matcher correctly rejects — so a failing CHECK below could be misread as
+    // a matcher bug. VINs are fixed-length; keep that expectation explicit.
     snprintf(out, 13, "Tesla %s", n >= 6 ? vin + n - 6 : vin);
 }
 
