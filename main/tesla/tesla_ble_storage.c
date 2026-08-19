@@ -260,8 +260,11 @@ void tesla_beacon_log_dump(void)
     tesla_beacon_log_t log;
     nvs_handle_t h;
 
-    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
-        ESP_LOGI(TAG, "beacon log: (no NVS)");
+    // READWRITE so the "tesla" namespace is created on first boot (it doesn't
+    // exist until Phase 3 writes a key); beacon_log_load treats absence as an
+    // empty log. This also pre-creates the namespace for later writes.
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        ESP_LOGI(TAG, "beacon log: (NVS unavailable)");
         return;
     }
     beacon_log_load(h, &log);
