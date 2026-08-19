@@ -95,9 +95,8 @@ static int discovery_event_handler(struct ble_gap_event *event, void *arg)
         ESP_LOGD(TAG, "  MAC=%02X:%02X:%02X:%02X:%02X:%02X",
                  mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
     } else {
-        // Diagnostic (temporary INFO): surface every nearby advertisement name
-        // so a live monitor shows what the observer actually sees. Intended to
-        // prove/disprove the scan path; demote back to DEBUG once confirmed.
+        // Non-Tesla advertisement: log at INFO so a no-monitor in-car run can be
+        // read back from the persistent advert log at the next boot.
         ESP_LOGI(TAG, "advert seen: name=\"%.*s\" (format=-) rssi=%d, mac=%02X:%02X:%02X:%02X:%02X:%02X",
                  (int)fields.name_len, (const char *)fields.name, (int)disc->rssi,
                  mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);

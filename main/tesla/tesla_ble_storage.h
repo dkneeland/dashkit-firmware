@@ -7,10 +7,10 @@
  *   - the 17-char VIN (personalization for every command)
  *   - the car's BLE address (so we connect directly instead of re-scanning)
  *
- * Phase 3 (pairing) fills these via tesla_storage_save_*; Phase 2 code reads
- * them (tesla_storage_load_*) so that once a key is enrolled the handshake +
- * GET_STATUS poll can run. Session caching (epoch/counter/clock offset) and
- * key generation/re-enrollment land in Phase 3.
+ * Phase 3 (pairing) writes these from its enrollment flow; Phase 2 code only
+ * reads them (tesla_storage_load_*) so that once a key is enrolled the
+ * handshake + GET_STATUS poll can run. Session caching (epoch/counter/clock
+ * offset) and key generation/re-enrollment land in Phase 3.
  *
  * Matches the plan: "plaintext NVS private key initially (matches the ESPHome
  * reference)" — no key material is ever logged; flash-encryption / SE hardening
@@ -45,18 +45,12 @@ typedef struct {
 // --- keypair ---
 bool tesla_storage_has_key(void);
 esp_err_t tesla_storage_load_key(tesla_keypair_t *key);
-esp_err_t tesla_storage_save_key(const tesla_keypair_t *key);
 
 // --- VIN (17 chars, NUL-terminated) ---
 esp_err_t tesla_storage_load_vin(char *vin, size_t cap);
-esp_err_t tesla_storage_save_vin(const char *vin);
 
 // --- car BLE address ---
 esp_err_t tesla_storage_load_car_addr(tesla_car_addr_t *addr);
-esp_err_t tesla_storage_save_car_addr(const tesla_car_addr_t *addr);
-
-// Remove all Tesla state (used by a factory reset / re-pair flow in Phase 3+).
-void tesla_storage_erase_all(void);
 
 // ---- Onboard advertisement-name log (in-car diagnostic) ----
 //
