@@ -157,12 +157,13 @@ typedef struct {
     // surfaced so the client can fire the proper canary instead of logging a
     // misleading "handshake complete".
     bool     whitelisted;
-    // Response anti-replay: a 64-entry sliding window over this domain's
-    // response-direction counters (reference updateSlidingWindow semantics).
-    // It is updated ONLY after a response authenticates (GCM), so an
-    // unauthenticated injected frame can never poison it.
-    uint32_t replay_high;                  // highest authenticated counter seen
-    uint64_t replay_seen;                  // bit i set => (replay_high - i) seen
+    // Response anti-replay (per request, matching the reference's per-request
+    // window): after GCM authentication, a response whose counter is not
+    // strictly ahead of the highest authenticated counter for this request is
+    // rejected as a replay. Reset when each command is built (in
+    // tesla_session_build_command). The BLE link is reliable and ordered, so
+    // no out-of-order window is needed (YAGNI).
+    uint32_t replay_high;                  // highest authenticated counter seen (current request)
     bool     replay_init;                  // false until first authenticated response
 } tesla_session_t;
 
@@ -240,7 +241,8 @@ typedef enum {
 } tesla_vcsec_phase_t;
 
 // Classify a single FromVCSECMessage per protocol.md §VCSEC application-layer
-// responses. `expect_whitelist` tells the classifier how to treat an empty
-// message (success for non-whitelist, ignore for whitelist pairing).
-tesla_vcsec_phase_t tesla_vcsec_ingest(const VCSEC_FromVCSECMessage *m,
-                                       bool expect_whitelist);
+// responses. VCSEC may emit up to three responses to one request; WAIT/ERROR
+// are non-terminal, a vehicleStatus is the STATUS answer, nominalError is a
+// terminal error, and everything else is terminal DONE. (Phase 2 GET_STATUS
+// scope only — the whitelist-pairing variant returns in Phase 3.)
+tesla_vcsec_phase_t tesla_vcsec_ingest(const VCSEC_FromVCSECMessage *m);

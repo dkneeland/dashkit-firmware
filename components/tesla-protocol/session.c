@@ -231,8 +231,9 @@ void tesla_session_init(tesla_session_t *s, uint8_t domain, tesla_now_ms_fn now_
 
 uint32_t tesla_session_now_vehicle_s(const tesla_session_t *s)
 {
+    // No session (or no local clock): can't compute a vehicle timestamp.
     if (!s->valid || s->now_ms == NULL) {
-        return s->valid ? s->clock_time : 0;
+        return 0;
     }
     // vehicle_now_ms = clock_time*1000 + (local_now - sync_local_ms)
     int64_t now_ms = (int64_t)s->now_ms();
@@ -256,7 +257,9 @@ int tesla_build_handshake_request(uint32_t domain,
 
 // Derives K from the client keypair and the vehicle public key, then verifies
 // the session-info HMAC tag against the challenge we sent. Shared by the
-// initial handshake and (Phase 6) resync updates.
+// initial handshake and (Phase 6) resync updates. On success also returns the
+// decoded SessionInfo (epoch/counter/clock/status) so the caller need not
+// decode it a second time.
 static int verify_session_info(const tesla_keypair_t *key,
                                const uint8_t *vin, size_t vin_len,
                                const uint8_t challenge[16],
@@ -264,6 +267,7 @@ static int verify_session_info(const tesla_keypair_t *key,
                                const uint8_t tag[32],
                                uint8_t k_out[TESLA_SHARED_KEY_LEN],
                                uint8_t vin_pubkey[TESLA_PUBKEY_LEN],
+                               Signatures_SessionInfo *info_out,
                                tesla_rng_fn f_rng, void *p_rng)
 {
     Signatures_SessionInfo info;
@@ -306,6 +310,9 @@ static int verify_session_info(const tesla_keypair_t *key,
     if (vin_pubkey != NULL) {
         memcpy(vin_pubkey, info.publicKey.bytes, TESLA_PUBKEY_LEN);
     }
+    if (info_out != NULL) {
+        *info_out = info;
+    }
     return 0;
 }
 
@@ -317,10 +324,9 @@ int tesla_session_handshake(tesla_session_t *s, const tesla_keypair_t *key,
 {
     UniversalMessage_RoutableMessage m;
     Signatures_SessionInfo info;
-    pb_istream_t stream;
     uint8_t k[TESLA_SHARED_KEY_LEN];
     uint8_t pub[TESLA_PUBKEY_LEN];
-    int rc;
+    int rc = -1;
 
     if (s == NULL || key == NULL || challenge == NULL) {
         return -1;
@@ -340,20 +346,13 @@ int tesla_session_handshake(tesla_session_t *s, const tesla_keypair_t *key,
         return -1;
     }
 
+    // Verify HMAC + derive K in one decode; populates `info` for the caller.
     rc = verify_session_info(key, vin, vin_len, challenge,
                              m.payload.session_info.bytes,
                              m.payload.session_info.size,
                              m.sub_sigData.signature_data.sig_type.session_info_tag.tag,
-                             k, pub, f_rng, p_rng);
+                             k, pub, &info, f_rng, p_rng);
     if (rc != 0) {
-        return -1;
-    }
-
-    // Decode the info to populate session state.
-    stream = pb_istream_from_buffer(m.payload.session_info.bytes,
-                                    m.payload.session_info.size);
-    memset(&info, 0, sizeof(info));
-    if (!pb_decode(&stream, Signatures_SessionInfo_fields, &info)) {
         return -1;
     }
 
@@ -374,7 +373,6 @@ int tesla_session_handshake(tesla_session_t *s, const tesla_keypair_t *key,
     // Fresh replay window: not primed until the first authenticated response.
     s->replay_init = false;
     s->replay_high = 0;
-    s->replay_seen = 0;
     return 0;
 }
 
@@ -499,51 +497,25 @@ int tesla_session_build_command(tesla_session_t *s,
 
     // Only commit the counter after a successful sign+encode.
     s->counter = counter;
+    // Per-request anti-replay: re-arm the window for this request's responses.
+    s->replay_init = false;
+    s->replay_high = 0;
     return 0;
 }
 
-// Anti-replay sliding window over response-direction counters (64 entries,
-// mirroring the reference's updateSlidingWindow). Only ever called for a
-// response whose GCM tag has verified (C1: the window must not be advanceable
-// by an unauthenticated frame). Accepts counters newer than the window (shifts
-// it), tolerates out-of-order responses still inside the window (C2), and
-// rejects exact duplicates and counters older than the retained window.
-#define TESLA_REPLAY_WINDOW 64
+// Anti-replay (per request): only ever called for a response whose GCM tag has
+// verified (C1: an unauthenticated frame cannot advance it). The BLE link is
+// reliable and ordered, so only require strictly-newer counters — no sliding
+// out-of-order window (YAGNI). The signed comparison is wraparound-safe across
+// uint32 counter rollover.
 static int replay_check(tesla_session_t *s, uint32_t counter)
 {
-    if (!s->replay_init) {
-        s->replay_high = counter;
-        s->replay_seen = 1;
-        s->replay_init = true;
-        return 0;
+    if (s->replay_init && (int32_t)(counter - s->replay_high) <= 0) {
+        return -3;   // duplicate, or not newer than the highest authenticated
     }
-    // Signed 32-bit wraparound-safe delta: a real |delta| is << 2^31, so a
-    // positive value means "newer" even across a uint32 counter rollover.
-    int32_t d = (int32_t)(counter - s->replay_high);
-    if (d > 0) {
-        uint32_t shift = (uint32_t)d;
-        if (shift >= TESLA_REPLAY_WINDOW) {
-            s->replay_seen = 0;             // old history fully discarded
-        } else {
-            s->replay_seen <<= shift;
-        }
-        s->replay_high = counter;
-        s->replay_seen |= 1;
-        return 0;
-    }
-    if (d < 0) {
-        uint32_t idx = (uint32_t)(-d);
-        if (idx >= TESLA_REPLAY_WINDOW) {
-            return -3;                      // too old / replay
-        }
-        uint64_t bit = (uint64_t)1 << idx;
-        if (s->replay_seen & bit) {
-            return -3;                      // exact duplicate
-        }
-        s->replay_seen |= bit;
-        return 0;                           // out-of-order but new-in-window
-    }
-    return -3;                              // d == 0: exact duplicate of newest
+    s->replay_high = counter;
+    s->replay_init = true;
+    return 0;
 }
 
 int tesla_session_process_response(tesla_session_t *s,
@@ -632,13 +604,18 @@ int tesla_session_process_response(tesla_session_t *s,
         }
         plain_len = m.payload.protobuf_message_as_bytes.size;
 
-        // Anti-replay AFTER authentication: sliding window tolerates
-        // out-of-order responses and rejects duplicates/too-old counters.
+        // Anti-replay AFTER authentication: only reject non-newer counters
+        // (link is ordered; no out-of-order window needed). An unauthenticated
+        // frame never reaches here, so it cannot poison the window (C1).
         if (replay_check(s, gcm->counter) != 0) {
             return -3;
         }
     } else {
-        // Older firmware (pre-2024.38): response payload is plaintext.
+        // Older firmware (pre-2024.38): response payload is plaintext — NO GCM
+        // tag, NO request-hash binding, and NO anti-replay here. Unauthenticated:
+        // a rogue link peer could inject arbitrary bytes. Acceptable only for
+        // this read-only status poll against 2024.38+ firmware; revisit if a
+        // pre-2024.38 car must be supported for anything but status.
         plain_len = m.payload.protobuf_message_as_bytes.size;
         if (plain_len > sizeof(plain)) {
             return -1;
@@ -656,8 +633,7 @@ int tesla_session_process_response(tesla_session_t *s,
     return 0;
 }
 
-tesla_vcsec_phase_t tesla_vcsec_ingest(const VCSEC_FromVCSECMessage *m,
-                                       bool expect_whitelist)
+tesla_vcsec_phase_t tesla_vcsec_ingest(const VCSEC_FromVCSECMessage *m)
 {
     if (m == NULL) {
         return TESLA_VCSEC_PENDING;
@@ -668,13 +644,9 @@ tesla_vcsec_phase_t tesla_vcsec_ingest(const VCSEC_FromVCSECMessage *m,
     case VCSEC_FromVCSECMessage_vehicleStatus_tag:
         return TESLA_VCSEC_STATUS;
     case VCSEC_FromVCSECMessage_commandStatus_tag: {
+        // signedMessageStatus: WAIT/ERROR are non-terminal (protocol.md says
+        // discard and wait for the specific result); anything else is success.
         const VCSEC_CommandStatus *cs = &m->sub_message.commandStatus;
-        // A whitelist-operation status is always the terminal result.
-        if (cs->which_sub_message == VCSEC_CommandStatus_whitelistOperationStatus_tag) {
-            return TESLA_VCSEC_DONE;
-        }
-        // Otherwise it's a signed-message status: WAIT/ERROR are non-terminal
-        // (protocol.md says discard and wait for the specific result).
         if (cs->operationStatus == VCSEC_OperationStatus_E_OPERATIONSTATUS_WAIT ||
             cs->operationStatus == VCSEC_OperationStatus_E_OPERATIONSTATUS_ERROR) {
             return TESLA_VCSEC_PENDING;
@@ -682,8 +654,7 @@ tesla_vcsec_phase_t tesla_vcsec_ingest(const VCSEC_FromVCSECMessage *m,
         return TESLA_VCSEC_DONE;
     }
     default:
-        // Empty / unrecognized: success for non-whitelist requests, ignored
-        // (kept waiting) for whitelist pairing.
-        return expect_whitelist ? TESLA_VCSEC_PENDING : TESLA_VCSEC_DONE;
+        // Empty / unrecognized: success (no application payload to report).
+        return TESLA_VCSEC_DONE;
     }
 }

@@ -30,7 +30,6 @@ static const char *TAG = "tesla_ble";
 // Service:  00000211-b2d1-43f0-9b88-960cebf8b91e
 // Write:    00000212-b2d1-43f0-9b88-960cebf8b91e  (write with response)
 // Indicate: 00000213-b2d1-43f0-9b88-960cebf8b91e
-#define TESLA_UUID_TIMEOUT_MS 15000
 #define TESLA_CONNECT_TIMEOUT_MS 20000
 #define TESLA_RX_BUF 600
 
@@ -494,7 +493,7 @@ esp_err_t tesla_ble_send(const uint8_t *data, size_t len)
         s_central.tx_handle == 0) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (len > 65535 || total > sizeof(framed)) {
+    if (total > sizeof(framed)) {
         return ESP_ERR_INVALID_ARG;
     }
     framed[0] = (uint8_t)(len >> 8);
@@ -527,11 +526,6 @@ void tesla_ble_disconnect(void)
         ble_gap_terminate(s_central.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
     }
     central_fail_cleanup();
-}
-
-bool tesla_ble_is_connected(void)
-{
-    return s_central.state == ST_READY;
 }
 
 void tesla_ble_set_rx_cb(tesla_ble_rx_fn_t cb, void *arg)

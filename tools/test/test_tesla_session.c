@@ -370,7 +370,7 @@ static void test_command_roundtrip(void)
     CHECK(from.sub_message.vehicleStatus.vehicleLockState ==
               VCSEC_VehicleLockState_E_VEHICLELOCKSTATE_LOCKED,
           "lock state decoded [LOCKED]");
-    phase = tesla_vcsec_ingest(&from, false);
+    phase = tesla_vcsec_ingest(&from);
     CHECK(phase == TESLA_VCSEC_STATUS, "state machine: vehicleStatus -> STATUS");
 
     // Replay protection: the identical response must now be rejected.
@@ -462,49 +462,47 @@ static void test_vcsec_state_machine(void)
 
     memset(&m, 0, sizeof(m));
     m.which_sub_message = (pb_size_t)VCSEC_FromVCSECMessage_vehicleStatus_tag;
-    CHECK(tesla_vcsec_ingest(&m, false) == TESLA_VCSEC_STATUS,
+    CHECK(tesla_vcsec_ingest(&m) == TESLA_VCSEC_STATUS,
           "vehicleStatus -> STATUS");
 
     memset(&m, 0, sizeof(m));
     m.which_sub_message = (pb_size_t)VCSEC_FromVCSECMessage_commandStatus_tag;
     m.sub_message.commandStatus.operationStatus =
         VCSEC_OperationStatus_E_OPERATIONSTATUS_WAIT;
-    CHECK(tesla_vcsec_ingest(&m, false) == TESLA_VCSEC_PENDING,
+    CHECK(tesla_vcsec_ingest(&m) == TESLA_VCSEC_PENDING,
           "WAIT -> PENDING (busy, keep collecting)");
 
     memset(&m, 0, sizeof(m));
     m.which_sub_message = (pb_size_t)VCSEC_FromVCSECMessage_commandStatus_tag;
     m.sub_message.commandStatus.operationStatus =
         VCSEC_OperationStatus_E_OPERATIONSTATUS_ERROR;
-    CHECK(tesla_vcsec_ingest(&m, false) == TESLA_VCSEC_PENDING,
+    CHECK(tesla_vcsec_ingest(&m) == TESLA_VCSEC_PENDING,
           "OPERATIONSTATUS_ERROR -> PENDING (wait for specific error)");
 
     memset(&m, 0, sizeof(m));
     m.which_sub_message = (pb_size_t)VCSEC_FromVCSECMessage_commandStatus_tag;
     m.sub_message.commandStatus.which_sub_message =
         (pb_size_t)VCSEC_CommandStatus_whitelistOperationStatus_tag;
-    CHECK(tesla_vcsec_ingest(&m, false) == TESLA_VCSEC_DONE,
+    CHECK(tesla_vcsec_ingest(&m) == TESLA_VCSEC_DONE,
           "whitelistOperationStatus -> DONE (terminal)");
 
     memset(&m, 0, sizeof(m));
     m.which_sub_message = (pb_size_t)VCSEC_FromVCSECMessage_commandStatus_tag;
     m.sub_message.commandStatus.operationStatus =
         VCSEC_OperationStatus_E_OPERATIONSTATUS_OK;
-    CHECK(tesla_vcsec_ingest(&m, false) == TESLA_VCSEC_DONE,
+    CHECK(tesla_vcsec_ingest(&m) == TESLA_VCSEC_DONE,
           "signedMessageStatus OK -> DONE");
 
     memset(&m, 0, sizeof(m));
     m.which_sub_message = (pb_size_t)VCSEC_FromVCSECMessage_nominalError_tag;
     m.sub_message.nominalError.genericError = 1;
-    CHECK(tesla_vcsec_ingest(&m, false) == TESLA_VCSEC_ERROR,
+    CHECK(tesla_vcsec_ingest(&m) == TESLA_VCSEC_ERROR,
           "nominalError -> ERROR");
 
-    // Empty message: success for non-whitelist, ignored for whitelist pairing.
+    // Empty message: terminal success (no application payload).
     memset(&m, 0, sizeof(m));
-    CHECK(tesla_vcsec_ingest(&m, false) == TESLA_VCSEC_DONE,
-          "empty (non-whitelist) -> DONE (success)");
-    CHECK(tesla_vcsec_ingest(&m, true) == TESLA_VCSEC_PENDING,
-          "empty (whitelist pairing) -> PENDING (keep waiting)");
+    CHECK(tesla_vcsec_ingest(&m) == TESLA_VCSEC_DONE,
+          "empty -> DONE (success)");
 }
 
 static void test_handshake_negative(void)
@@ -648,30 +646,9 @@ static void test_replay_window(void)
               "rw: legit response still accepted after forged frame (C1)");
     }
 
-    // (3) C2: out-of-order responses accepted within the window; a duplicate
-    //     of a seen counter rejected.
-    {
-        uint8_t hi[512], lo[512], dup[512];
-        size_t hrl = 0, lrl = 0, drl = 0, pl = 0; uint32_t fl = 0;
-        RW_BUILD(504, hi, &hrl);
-        RW_BUILD(503, lo, &lrl);
-        RW_BUILD(503, dup, &drl);
-        CHECK(tesla_session_process_response(&s, (const uint8_t *)VIN, strlen(VIN),
-                                             request_hash, req_hash_len,
-                                             hi, hrl, plain, sizeof(plain), &pl, &fl) == 0,
-              "rw: out-of-order high response accepted");
-        CHECK(tesla_session_process_response(&s, (const uint8_t *)VIN, strlen(VIN),
-                                             request_hash, req_hash_len,
-                                             lo, lrl, plain, sizeof(plain), &pl, &fl) == 0,
-              "rw: out-of-order lower response accepted (C2)");
-        CHECK(tesla_session_process_response(&s, (const uint8_t *)VIN, strlen(VIN),
-                                             request_hash, req_hash_len,
-                                             dup, drl, plain, sizeof(plain), &pl, &fl) == -3,
-              "rw: duplicate of a seen counter rejected");
-    }
     #undef RW_BUILD
 
-    // (4) uint32 counter rollover: a response counter of 0xFFFFFFFF (max) is
+    // (3) uint32 counter rollover: a response counter of 0xFFFFFFFF (max) is
     //     accepted as the first authenticated response of a fresh session.
     {
         tesla_session_t s2;

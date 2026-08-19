@@ -188,6 +188,12 @@ static void refresh_status(tesla_session_t *sess, const char *vin,
     // VCSEC may emit up to three responses to one request (e.g. a WAIT/busy
     // commandStatus before the vehicleStatus result). Feed each through the
     // terminal classifier until we hit STATUS / terminal DONE / ERROR.
+    //
+    // Caveat: if the vehicle echoes the request's counter in every response
+    // to that request, responses 2/3 carry the same counter and the anti-replay
+    // check rejects them as duplicates — the loop then degrades to a single
+    // response, which is perfectly fine for GET_STATUS. Confirm the counter
+    // model against a real car in Phase 3.
     bool got_status = false, errored = false;
     for (int i = 0; i < 3 && !got_status && !errored; i++) {
         uint8_t resp[RX_FRAME_MAX], plain[TESLA_PB_PAYLOAD_MAX];
@@ -220,7 +226,7 @@ static void refresh_status(tesla_session_t *sess, const char *vin,
             break;
         }
 
-        switch (tesla_vcsec_ingest(&from, false)) {
+        switch (tesla_vcsec_ingest(&from)) {
         case TESLA_VCSEC_STATUS: {
             int presence = (int)from.sub_message.vehicleStatus.userPresence;
             int lock     = (int)from.sub_message.vehicleStatus.vehicleLockState;
