@@ -152,16 +152,25 @@ typedef struct {
     uint8_t  vehicle_pubkey[TESLA_PUBKEY_LEN]; // peer identity (from SessionInfo)
     uint32_t handle;                       // from SessionInfo
     tesla_now_ms_fn now_ms;                // local clock source (may be NULL)
-    // Response anti-replay (per outstanding request): reset when a command is
-    // sent, then the response counter must strictly increase.
-    uint32_t last_resp_counter;
-    bool     resp_armed;
+    // Whether the enrolling SessionInfo reported this key as whitelisted.
+    // A valid-HMAC session can still be KEY_NOT_ON_WHITELIST (un-enrolled key);
+    // surfaced so the client can fire the proper canary instead of logging a
+    // misleading "handshake complete".
+    bool     whitelisted;
+    // Response anti-replay: a 64-entry sliding window over this domain's
+    // response-direction counters (reference updateSlidingWindow semantics).
+    // It is updated ONLY after a response authenticates (GCM), so an
+    // unauthenticated injected frame can never poison it.
+    uint32_t replay_high;                  // highest authenticated counter seen
+    uint64_t replay_seen;                  // bit i set => (replay_high - i) seen
+    bool     replay_init;                  // false until first authenticated response
 } tesla_session_t;
 
-// "Expiration" applied to sent commands and to the stored clock offset: how
-// many vehicle-clock seconds a command may remain valid / how far out of sync
-// we tolerate before re-handshaking. Matches the plan's ~10 s poll cadence.
-#define TESLA_SESSION_VALIDITY_S 30
+// "Expiration" applied to sent commands: how many vehicle-clock seconds a
+// signed command may remain valid. Matches the reference's 5 s default (the
+// vehicle rejects commands whose TTL exceeds its max, MESSAGEFAULT_ERROR_*);
+// the ~10 s value is the poll cadence, not the per-command TTL.
+#define TESLA_SESSION_VALIDITY_S 5
 
 void tesla_session_init(tesla_session_t *s, uint8_t domain, tesla_now_ms_fn now_ms);
 

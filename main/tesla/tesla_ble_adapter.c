@@ -360,6 +360,15 @@ static int central_gap_event_handler(struct ble_gap_event *event, void *arg)
             break;
         }
         s_central.conn_handle = event->connect.conn_handle;
+        // A straggler from a timed-out/cancelled connect (review S3): the
+        // waiter gave up or we cancelled, so drop it now before entering
+        // discovery — otherwise it would wedge the state machine at
+        // ST_DISCOVERING forever and leak a scarce BLE slot.
+        if (s_central.state == ST_IDLE) {
+            ESP_LOGW(TAG, "dropping late central connection (timed out/cancelled)");
+            ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            break;
+        }
         s_central.state = ST_DISCOVERING;
         ESP_LOGI(TAG, "central connected (handle=%u)", s_central.conn_handle);
         // GATT procedures run serially; mtu_cb then starts service discovery.
@@ -458,6 +467,11 @@ esp_err_t tesla_ble_connect(const void *addr, uint32_t timeout_ms)
         ESP_LOGW(TAG, "connect timed out");
         if (s_central.conn_handle != 0) {
             ble_gap_terminate(s_central.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        } else {
+            // Connection request still pending at the controller: cancel it so
+            // no late CONNECT event can arrive and wedge the state machine
+            // (review S3).
+            ble_gap_conn_cancel();
         }
         s_central.state = ST_IDLE;
         return ESP_ERR_TIMEOUT;

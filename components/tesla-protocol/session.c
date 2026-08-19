@@ -275,6 +275,9 @@ static int verify_session_info(const tesla_keypair_t *key,
         return -1;
     }
 
+    // Zero before decode: nanopb does not clear callbacks/optional fields, and
+    // this runs on unauthenticated input before HMAC verification.
+    memset(&info, 0, sizeof(info));
     stream = pb_istream_from_buffer(encoded_info, encoded_info_len);
     if (!pb_decode(&stream, Signatures_SessionInfo_fields, &info)) {
         return -1;
@@ -363,8 +366,15 @@ int tesla_session_handshake(tesla_session_t *s, const tesla_keypair_t *key,
     memcpy(s->shared_key, k, TESLA_SHARED_KEY_LEN);
     memcpy(s->client_pubkey, key->pub, TESLA_PUBKEY_LEN);
     memcpy(s->vehicle_pubkey, pub, TESLA_PUBKEY_LEN);
-    s->last_resp_counter = 0;
-    s->resp_armed = false;
+    // status defaults to OK when omitted; only KEY_NOT_ON_WHITELIST (1) means
+    // the key isn't enrolled. The adversary can't forge this: it's covered by
+    // the session-info HMAC we just verified.
+    s->whitelisted =
+        (info.status == Signatures_Session_Info_Status_SESSION_INFO_STATUS_OK);
+    // Fresh replay window: not primed until the first authenticated response.
+    s->replay_init = false;
+    s->replay_high = 0;
+    s->replay_seen = 0;
     return 0;
 }
 
@@ -429,7 +439,9 @@ int tesla_session_build_command(tesla_session_t *s,
     m.has_to_destination = true;
     tesla_pb_dest_domain(&m.to_destination, domain);
     m.has_from_destination = true;
-    tesla_pb_dest_route(&m.from_destination, routing, 16);
+    if (tesla_pb_dest_route(&m.from_destination, routing, 16) != 0) {
+        return -1;
+    }
 
     m.which_payload = (pb_size_t)UniversalMessage_RoutableMessage_protobuf_message_as_bytes_tag;
     {
@@ -487,8 +499,51 @@ int tesla_session_build_command(tesla_session_t *s,
 
     // Only commit the counter after a successful sign+encode.
     s->counter = counter;
-    s->resp_armed = false;
     return 0;
+}
+
+// Anti-replay sliding window over response-direction counters (64 entries,
+// mirroring the reference's updateSlidingWindow). Only ever called for a
+// response whose GCM tag has verified (C1: the window must not be advanceable
+// by an unauthenticated frame). Accepts counters newer than the window (shifts
+// it), tolerates out-of-order responses still inside the window (C2), and
+// rejects exact duplicates and counters older than the retained window.
+#define TESLA_REPLAY_WINDOW 64
+static int replay_check(tesla_session_t *s, uint32_t counter)
+{
+    if (!s->replay_init) {
+        s->replay_high = counter;
+        s->replay_seen = 1;
+        s->replay_init = true;
+        return 0;
+    }
+    // Signed 32-bit wraparound-safe delta: a real |delta| is << 2^31, so a
+    // positive value means "newer" even across a uint32 counter rollover.
+    int32_t d = (int32_t)(counter - s->replay_high);
+    if (d > 0) {
+        uint32_t shift = (uint32_t)d;
+        if (shift >= TESLA_REPLAY_WINDOW) {
+            s->replay_seen = 0;             // old history fully discarded
+        } else {
+            s->replay_seen <<= shift;
+        }
+        s->replay_high = counter;
+        s->replay_seen |= 1;
+        return 0;
+    }
+    if (d < 0) {
+        uint32_t idx = (uint32_t)(-d);
+        if (idx >= TESLA_REPLAY_WINDOW) {
+            return -3;                      // too old / replay
+        }
+        uint64_t bit = (uint64_t)1 << idx;
+        if (s->replay_seen & bit) {
+            return -3;                      // exact duplicate
+        }
+        s->replay_seen |= bit;
+        return 0;                           // out-of-order but new-in-window
+    }
+    return -3;                              // d == 0: exact duplicate of newest
 }
 
 int tesla_session_process_response(tesla_session_t *s,
@@ -515,7 +570,8 @@ int tesla_session_process_response(tesla_session_t *s,
         return -1;
     }
     if (fault_out != NULL) {
-        *fault_out = m.signedMessageStatus.signed_message_fault ? 1 : 0;
+        // Surface the actual fault code, not just a boolean (review N1/N2).
+        *fault_out = m.signedMessageStatus.signed_message_fault;
     }
 
     // A response that carries proactive session info is a desync hint, not an
@@ -528,19 +584,9 @@ int tesla_session_process_response(tesla_session_t *s,
         return -1;
     }
 
-    // Anti-replay: the response counter must strictly increase for a request.
     if (m.which_sub_sigData == UniversalMessage_RoutableMessage_signature_data_tag &&
         m.sub_sigData.signature_data.which_sig_type ==
             Signatures_SignatureData_AES_GCM_Response_data_tag) {
-        if (s->resp_armed &&
-            m.sub_sigData.signature_data.sig_type.AES_GCM_Response_data.counter <=
-                s->last_resp_counter) {
-            return -3;
-        }
-        s->last_resp_counter =
-            m.sub_sigData.signature_data.sig_type.AES_GCM_Response_data.counter;
-        s->resp_armed = true;
-
         gcm = &m.sub_sigData.signature_data.sig_type.AES_GCM_Response_data;
         // Response metadata domain is the response's *from* domain (its
         // origin), exactly like the reference responseMetadata(); the sender
@@ -572,6 +618,11 @@ int tesla_session_process_response(tesla_session_t *s,
         if (m.payload.protobuf_message_as_bytes.size > sizeof(plain)) {
             return -1;
         }
+        // Authenticate FIRST: the GCM tag binds nonce/tag/ciphertext and the
+        // AAD (which covers the counter via response metadata). Only a
+        // successfully authenticated response may advance the anti-replay
+        // window — a forged frame fails here and the window stays untouched
+        // (review C1). A victim is never returned on auth failure.
         rc = tesla_gcm_decrypt(s->shared_key,
                                m.payload.protobuf_message_as_bytes.bytes,
                                m.payload.protobuf_message_as_bytes.size,
@@ -580,6 +631,12 @@ int tesla_session_process_response(tesla_session_t *s,
             return -1;
         }
         plain_len = m.payload.protobuf_message_as_bytes.size;
+
+        // Anti-replay AFTER authentication: sliding window tolerates
+        // out-of-order responses and rejects duplicates/too-old counters.
+        if (replay_check(s, gcm->counter) != 0) {
+            return -3;
+        }
     } else {
         // Older firmware (pre-2024.38): response payload is plaintext.
         plain_len = m.payload.protobuf_message_as_bytes.size;
