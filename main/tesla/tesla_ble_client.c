@@ -69,7 +69,11 @@ static void client_rx_cb(const uint8_t *data, size_t len, void *arg)
     f.len = (uint16_t)len;
     memcpy(f.data, data, len);
     if (xQueueSend(s_rxq, &f, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "rx queue full; dropping frame");
+        // The queue backs up only with stale/extra frames the car pushed while
+        // we were idle between polls (each request re-reads its own response by
+        // fresh routing). Dropping them is benign, so keep it at DEBUG — a WARN
+        // here was pure noise on a healthy car.
+        ESP_LOGD(TAG, "rx queue full; dropping stale frame");
     }
 }
 
@@ -393,6 +397,12 @@ static void client_task(void *arg)
         {
             int last_presence = -1, last_lock = -1, last_sleep = -1;
             for (int i = 0; i < POLLS_PER_CONN; i++) {
+                // Clear stale/extra frames the car pushed during the idle wait
+                // (VCSEC may emit more indications than we consume) so the
+                // queue can't back up the next response — each request re-reads
+                // its own response by fresh routing, so nothing legitimate is
+                // discarded here.
+                drain_rxq();
                 if (refresh_status(&sess, vin,
                                    &last_presence, &last_lock, &last_sleep) != ESP_OK) {
                     break;
