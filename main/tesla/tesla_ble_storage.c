@@ -171,118 +171,130 @@ void tesla_storage_erase_all(void)
     }
 }
 
-// ---- Onboard beacon log ----
+// ---- Onboard advertisement-name log ----
 //
-// Persisted as a single NVS blob (a fixed ring), rewritten only when a NEW
-// Beacon is seen (dedup by MAC+name), so normal repetitive advertising does not
-// churn NVS. Ring keeps the most recent TESLA_BEACON_LOG_MAX unique cars.
+// Persisted as a single NVS blob (a fixed array, oldest dropped when full).
+// Rewritten only when a NEW distinct name is first seen (dedup by name bytes),
+// so routine re-advertising does not churn NVS.
 
-#define BEACON_LOG_MAGIC 0xB0CEB00Bu
-static const uint32_t BEACON_LOG_TOTAL =
-    (sizeof(tesla_beacon_log_entry_t) * TESLA_BEACON_LOG_MAX) + 8;
+#define ADVERT_LOG_MAGIC  0xAD5E0BEEu
+#define ADVERT_LOG_NSZ    (sizeof(tesla_advert_log_entry_t) * TESLA_ADVERT_LOG_MAX + 8)
 
 typedef struct {
     uint32_t magic;
     uint16_t count;
     uint16_t max;
-    tesla_beacon_log_entry_t e[TESLA_BEACON_LOG_MAX];
-} __attribute__((packed)) tesla_beacon_log_t;
+    tesla_advert_log_entry_t e[TESLA_ADVERT_LOG_MAX];
+} __attribute__((packed)) tesla_advert_log_t;
 
 static const char *fmt_name(uint8_t format)
 {
-    return format == 2 ? "modern" : (format == 1 ? "legacy" : "none");
+    return format == 2 ? "modern" : (format == 1 ? "legacy" : "-");
 }
 
-static void beacon_log_load(nvs_handle_t h, tesla_beacon_log_t *log)
+static void advert_log_load(nvs_handle_t h, tesla_advert_log_t *log)
 {
-    size_t n = BEACON_LOG_TOTAL;
-    memset(log, 0, BEACON_LOG_TOTAL);
+    size_t n = ADVERT_LOG_NSZ;
+    memset(log, 0, ADVERT_LOG_NSZ);
     if (nvs_get_blob(h, KEY_BEACON, log, &n) != ESP_OK ||
-        log->magic != BEACON_LOG_MAGIC || log->max != TESLA_BEACON_LOG_MAX ||
-        log->count > TESLA_BEACON_LOG_MAX) {
-        log->magic = BEACON_LOG_MAGIC;
-        log->max   = TESLA_BEACON_LOG_MAX;
+        log->magic != ADVERT_LOG_MAGIC || log->max != TESLA_ADVERT_LOG_MAX ||
+        log->count > TESLA_ADVERT_LOG_MAX) {
+        log->magic = ADVERT_LOG_MAGIC;
+        log->max   = TESLA_ADVERT_LOG_MAX;
         log->count = 0;
         memset(log->e, 0, sizeof(log->e));
     }
 }
 
-void tesla_beacon_log_add(const uint8_t *name, size_t name_len, uint8_t format,
-                          const uint8_t mac[6], int8_t rssi)
+void tesla_advert_log_add(const uint8_t *name, size_t name_len, uint8_t matched,
+                          uint8_t format, const uint8_t mac[6], int8_t rssi)
 {
-    tesla_beacon_log_t log;
+    tesla_advert_log_t log;
     nvs_handle_t h;
 
-    if (name == NULL || mac == NULL) {
+    if (name == NULL || mac == NULL || name_len == 0) {
         return;
+    }
+    if (name_len > sizeof(((tesla_advert_log_entry_t *)0)->name)) {
+        name_len = sizeof(((tesla_advert_log_entry_t *)0)->name);
     }
     if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
         return;
     }
-    beacon_log_load(h, &log);
+    advert_log_load(h, &log);
 
-    // Dedup: a car advertises the same MAC + name repeatedly; log it once.
+    // Dedup by name bytes: if already logged, just refresh rssi/sightings.
     for (uint16_t i = 0; i < log.count; i++) {
-        if (log.e[i].name_len == (uint8_t)name_len &&
-            log.e[i].format == format &&
-            memcmp(log.e[i].mac, mac, 6) == 0 &&
-            memcmp(log.e[i].name, name, name_len) == 0) {
+        tesla_advert_log_entry_t *en = &log.e[i];
+        if (en->name_len == (uint8_t)name_len &&
+            memcmp(en->name, name, name_len) == 0) {
+            en->rssi  = rssi;
+            if (en->count != UINT16_MAX) {
+                en->count++;
+            }
+            // A later sighting that turns out to be a Tesla match upgrades a
+            // previously-logged "other" entry.
+            if (matched != 0) {
+                en->matched = 1;
+                en->format  = format;
+            }
             nvs_close(h);
             return;
         }
     }
 
-    // Ring append (drop oldest when full).
-    if (log.count >= TESLA_BEACON_LOG_MAX) {
+    // New distinct name: drop oldest if full, then append.
+    if (log.count >= TESLA_ADVERT_LOG_MAX) {
         memmove(&log.e[0], &log.e[1],
-                sizeof(tesla_beacon_log_entry_t) * (TESLA_BEACON_LOG_MAX - 1));
+                sizeof(tesla_advert_log_entry_t) * (TESLA_ADVERT_LOG_MAX - 1));
     } else {
         log.count++;
     }
-    tesla_beacon_log_entry_t *en = &log.e[log.count - 1];
+    tesla_advert_log_entry_t *en = &log.e[log.count - 1];
     memset(en, 0, sizeof(*en));
-    size_t n = name_len < sizeof(en->name) ? name_len : sizeof(en->name);
-    memcpy(en->name, name, n);
-    en->name_len = (uint8_t)n;
+    memcpy(en->name, name, name_len);
+    en->name_len = (uint8_t)name_len;
+    en->matched  = matched;
     en->format   = format;
     memcpy(en->mac, mac, 6);
     en->rssi     = rssi;
+    en->count    = 1;
     en->time_s   = (uint32_t)(esp_timer_get_time() / 1000000);
 
-    if (nvs_set_blob(h, KEY_BEACON, &log, BEACON_LOG_TOTAL) == ESP_OK) {
+    if (nvs_set_blob(h, KEY_BEACON, &log, ADVERT_LOG_NSZ) == ESP_OK) {
         nvs_commit(h);
     }
     nvs_close(h);
 }
 
-void tesla_beacon_log_dump(void)
+void tesla_advert_log_dump(void)
 {
-    tesla_beacon_log_t log;
+    tesla_advert_log_t log;
     nvs_handle_t h;
 
     // READWRITE so the "tesla" namespace is created on first boot (it doesn't
-    // exist until Phase 3 writes a key); beacon_log_load treats absence as an
+    // exist until Phase 3 writes a key); advert_log_load treats absence as an
     // empty log. This also pre-creates the namespace for later writes.
     if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
-        ESP_LOGI(TAG, "beacon log: (NVS unavailable)");
+        ESP_LOGI(TAG, "advert log: (NVS unavailable)");
         return;
     }
-    beacon_log_load(h, &log);
+    advert_log_load(h, &log);
     nvs_close(h);
 
-    ESP_LOGI(TAG, "beacon log: %u previous Tesla detection(s) (oldest->newest)", log.count);
+    ESP_LOGI(TAG, "advert log: %u distinct name(s) seen (oldest->newest)", log.count);
     for (uint16_t i = 0; i < log.count; i++) {
-        const tesla_beacon_log_entry_t *en = &log.e[i];
-        ESP_LOGI(TAG, "  #%u name=\"%.*s\" (format=%s) MAC=%02X:%02X:%02X:%02X:%02X:%02X "
-                      "rssi=%d t=%us",
+        const tesla_advert_log_entry_t *en = &log.e[i];
+        ESP_LOGI(TAG, "  #%u name=\"%.*s\" (format=%s)%s MAC=%02X:%02X:%02X:%02X:%02X:%02X "
+                      "rssi=%d x%u t=%us",
                  (unsigned)i + 1, (int)en->name_len, (const char *)en->name,
-                 fmt_name(en->format),
+                 fmt_name(en->format), en->matched ? " [TESLA]" : "",
                  en->mac[5], en->mac[4], en->mac[3], en->mac[2], en->mac[1], en->mac[0],
-                 (int)en->rssi, (unsigned)en->time_s);
+                 (int)en->rssi, (unsigned)en->count, (unsigned)en->time_s);
     }
 }
 
-void tesla_beacon_log_clear(void)
+void tesla_advert_log_clear(void)
 {
     nvs_handle_t h;
 
