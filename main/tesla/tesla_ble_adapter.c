@@ -12,6 +12,7 @@
 #include "tesla_ble_adapter.h"
 #include "tesla_advert_name.h"
 #include "tesla_ble_storage.h"
+#include "tesla_pairing.h"
 
 #include "esp_log.h"
 #include "esp_random.h"
@@ -107,6 +108,19 @@ static int discovery_event_handler(struct ble_gap_event *event, void *arg)
     tesla_advert_log_add(fields.name, fields.name_len,
                          (uint8_t)(fmt != TESLA_NAME_NONE), (uint8_t)fmt,
                          mac, disc->rssi);
+
+    // Phase 3 auto-provision (unattended enrollment): if this is OUR car (by
+    // VIN-derived name), feed the pairing task the address we just discovered
+    // plus the target VIN, so enrollment arms itself with no console/app input.
+    // No-op unless the name matches the configured target and no key is
+    // enrolled yet. tesla_car_addr_t has the same {type, val[6]} layout as
+    // ble_addr_t, so a direct copy is safe.
+    if (fmt != TESLA_NAME_NONE) {
+        tesla_car_addr_t addr;
+        memcpy(&addr, &disc->addr, sizeof(addr));
+        tesla_pairing_observe_vehicle((const char *)fields.name,
+                                      fields.name_len, &addr);
+    }
     return 0;
 }
 

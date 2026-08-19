@@ -38,6 +38,14 @@ esp_err_t tesla_pairing_init(void);
 // task to enroll. This is the firmware half of the Phase 4 app pairing UX.
 esp_err_t tesla_pairing_configure(const char *vin, const tesla_car_addr_t *addr);
 
+// Auto-provision hook driven by the observer (no console/app input needed): the
+// observer discovers the car's BLE address straight from the scan, so as soon
+// as the advertisement name identifies THIS board's target vehicle it can arm
+// the pairing task with the VIN + discovered address and enroll unattended.
+bool tesla_pairing_is_target_vehicle(const char *name, size_t name_len);
+esp_err_t tesla_pairing_observe_vehicle(const char *name, size_t name_len,
+                                        const tesla_car_addr_t *addr);
+
 // One-shot enrollment attempt for the already-generated `key` against the car
 // at `addr` (owned by the pairing task; also exposed for direct use). Returns
 // ESP_OK only after the car confirms the key is enrolled (i.e. the owner tapped

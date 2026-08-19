@@ -33,6 +33,15 @@
 
 static const char *TAG = "tesla_pairing";
 
+// Auto-provision target for the observer hook (handoff "Option B"): the car
+// this board is being enrolled against. A real Tesla's legacy local name is
+// "S" + first-16-hex-chars(SHA1(VIN)) + role letter (CHARGING_MANAGER here).
+// Matching the derived name — not "any Tesla" — ensures we only auto-enroll
+// against OUR car, never a random Tesla in range. Mapping verified on-air for
+// this VIN (handoff note): 5YJ3E1EB3MF074051 -> Sf9cd80ddffdd5492C.
+#define TESLA_TARGET_VIN  "5YJ3E1EB3MF074051"
+#define TESLA_TARGET_NAME "Sf9cd80ddffdd5492C"
+
 // Enrolled role + form factor for the DashPilot key (plan §3): read + charge
 // only, presented as an Android-style device. DRIVER opt-in is Phase 5.
 #define ENROLL_ROLE        Keys_Role_ROLE_CHARGING_MANAGER
@@ -263,6 +272,37 @@ esp_err_t tesla_pairing_configure(const char *vin, const tesla_car_addr_t *addr)
     s_car_addr = *addr;
     s_configured = true;
     return ESP_OK;
+}
+
+bool tesla_pairing_is_target_vehicle(const char *name, size_t name_len)
+{
+    const size_t want = strlen(TESLA_TARGET_NAME);
+    return name != NULL && name_len == want &&
+           memcmp(name, TESLA_TARGET_NAME, want) == 0;
+}
+
+// Observer <> pairing handoff for unattended enrollment. Runs on the NimBLE
+// host task (discovery callback); only writes the one-shot provisioning state,
+// so the cross-task write to s_configured is benign (a plain bool, and once set
+// it short-circuits every later sighting).
+esp_err_t tesla_pairing_observe_vehicle(const char *name, size_t name_len,
+                                        const tesla_car_addr_t *addr)
+{
+    if (name == NULL || addr == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (tesla_storage_has_key()) {
+        return ESP_OK;            // already enrolled; client owns the link
+    }
+    if (s_configured) {
+        return ESP_OK;            // already provisioned this boot
+    }
+    if (!tesla_pairing_is_target_vehicle(name, name_len)) {
+        return ESP_ERR_NOT_FOUND; // not our target car
+    }
+    ESP_LOGI(TAG, "observer: target vehicle in range; auto-provisioning VIN %s",
+             TESLA_TARGET_VIN);
+    return tesla_pairing_configure(TESLA_TARGET_VIN, addr);
 }
 
 static void pairing_task(void *arg)
