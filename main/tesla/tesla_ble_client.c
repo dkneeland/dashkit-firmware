@@ -89,7 +89,13 @@ static esp_err_t recv_for_route(uint8_t *buf, size_t cap, size_t *out_len,
             return ESP_ERR_TIMEOUT;
         }
         UniversalMessage_RoutableMessage m;
+        memset(&m, 0, sizeof(m));   // pb_decode only writes wire-present fields;
+                                    // zero first so absent optional fields are not
+                                    // read as garbage (a non-matching / fault frame
+                                    // would otherwise be silently dropped as "not
+                                    // our response").
         if (tesla_pb_decode_routable(f.data, f.len, &m) != 0) {
+            ESP_LOGD(TAG, "rx frame unparseable (len=%u); ignoring", (unsigned)f.len);
             continue;   // unparseable frame: drop, keep waiting
         }
         if (m.has_to_destination &&
@@ -107,7 +113,18 @@ static esp_err_t recv_for_route(uint8_t *buf, size_t cap, size_t *out_len,
             }
             return ESP_OK;
         }
-        // Not our response; drop and keep waiting.
+        // Not our framed response. Surface a protocol-layer fault if the car
+        // answered with a rejection (so a real reply is never mistaken for a
+        // timeout), then drop and keep waiting.
+        if (m.has_signedMessageStatus &&
+            m.signedMessageStatus.signed_message_fault != 0) {
+            ESP_LOGW(TAG, "car replied w/ signedMessageStatus fault=%u (len=%u), not for our route",
+                     (unsigned)m.signedMessageStatus.signed_message_fault,
+                     (unsigned)f.len);
+        } else {
+            ESP_LOGD(TAG, "rx frame not for our route (len=%u); ignoring",
+                     (unsigned)f.len);
+        }
     }
 }
 

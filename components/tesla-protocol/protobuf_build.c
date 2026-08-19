@@ -62,8 +62,12 @@ int tesla_pb_encode_handshake(uint32_t domain,
     m.payload.session_info_request.public_key.size = TESLA_PUBKEY_LEN;
     memcpy(m.payload.session_info_request.public_key.bytes,
            client_pub, TESLA_PUBKEY_LEN);
-    m.payload.session_info_request.challenge.size = 16;
-    memcpy(m.payload.session_info_request.challenge.bytes, challenge, 16);
+    // NOTE: SessionInfoRequest.challenge is intentionally NOT set. Per
+    // protocol.md the handshake's HMAC challenge is the request's `uuid`
+    // (below), and every working implementation (Go vehicle-command,
+    // pyteslable, ESPHome) leaves `challenge` empty. Sending a populated
+    // `challenge` is the one field that differs from the reference and made
+    // the real car silently ignore the handshake (no session_info reply).
 
     m.uuid.size = 16;
     memcpy(m.uuid.bytes, challenge, 16);

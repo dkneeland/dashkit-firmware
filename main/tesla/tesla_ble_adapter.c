@@ -311,10 +311,14 @@ static int mtu_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
     return 0;
 }
 
-// Subscribe to the indicate characteristic (write 0x0002 to its CCCD).
+// Subscribe to the vehicle status characteristic (write to its CCCD). Value
+// 0x0003 enables BOTH notifications and indications: the reference uses
+// indications, but the working ESPHome/BLE path pushes replies as
+// notifications, so enabling both covers either delivery for the session/status
+// replies without ambiguity.
 static void subscribe_indicate(uint16_t conn_handle)
 {
-    const uint8_t cccd[2] = { 0x02, 0x00 };   // enable indications
+    const uint8_t cccd[2] = { 0x03, 0x00 };   // enable notifications + indications
     s_central.state = ST_SUBSCRIBING;
     int rc = ble_gattc_write_flat(conn_handle, s_central.rx_handle + 1,
                                   cccd, sizeof(cccd), NULL, NULL);
