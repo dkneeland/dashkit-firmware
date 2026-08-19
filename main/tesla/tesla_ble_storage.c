@@ -77,6 +77,49 @@ esp_err_t tesla_storage_load_vin(char *vin, size_t cap)
     return err;
 }
 
+esp_err_t tesla_storage_save_key(const tesla_keypair_t *key)
+{
+    nvs_handle_t h;
+    esp_err_t err;
+
+    if (key == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_blob(h, KEY_PRIV, key->priv, sizeof(key->priv));
+    if (err == ESP_OK) {
+        err = nvs_set_blob(h, KEY_PUB, key->pub, sizeof(key->pub));
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err;
+}
+
+esp_err_t tesla_storage_save_vin(const char *vin)
+{
+    nvs_handle_t h;
+    esp_err_t err;
+
+    if (vin == NULL || strlen(vin) != 17) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_str(h, KEY_VIN, vin);
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err;
+}
+
 esp_err_t tesla_storage_load_car_addr(tesla_car_addr_t *addr)
 {
     nvs_handle_t h;
@@ -96,6 +139,37 @@ esp_err_t tesla_storage_load_car_addr(tesla_car_addr_t *addr)
     }
     nvs_close(h);
     return err;
+}
+
+esp_err_t tesla_storage_save_car_addr(const tesla_car_addr_t *addr)
+{
+    nvs_handle_t h;
+    esp_err_t err;
+
+    if (addr == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_blob(h, KEY_ADDR, addr, sizeof(*addr));
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err;
+}
+
+void tesla_storage_erase_all(void)
+{
+    nvs_handle_t h;
+
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_all(h);
+        nvs_commit(h);
+        nvs_close(h);
+    }
 }
 
 // ---- Onboard advertisement-name log ----

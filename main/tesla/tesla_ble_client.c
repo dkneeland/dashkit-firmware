@@ -282,6 +282,10 @@ static void client_task(void *arg)
         }
         configured = true;
 
+        // Re-assert our RX callback each cycle: the pairing task owns the RX
+        // path during enrollment and hands it back once a key exists.
+        tesla_ble_set_rx_cb(client_rx_cb, NULL);
+
         ESP_LOGI(TAG, "connecting to car MAC %02X:%02X:%02X:%02X:%02X:%02X",
                  addr.val[5], addr.val[4], addr.val[3], addr.val[2],
                  addr.val[1], addr.val[0]);
@@ -294,7 +298,9 @@ static void client_task(void *arg)
             continue;
         }
 
-        // VCSEC handshake.
+        // VCSEC handshake (fresh each cycle — the boot-relative clock cannot
+        // carry a session's vehicle-clock offset across a reboot, so the client
+        // always re-syncs rather than caching a stale epoch/offset).
         tesla_session_t sess;
         tesla_session_init(&sess, TESLA_DOMAIN_VEHICLE_SECURITY, now_ms);
         {
@@ -330,7 +336,7 @@ static void client_task(void *arg)
                               "(enroll via Phase 3 pairing)");
                 goto cycle_done;
             }
-            ESP_LOGI(TAG, "VCSEC handshake complete (epoch=counter=%u)",
+            ESP_LOGI(TAG, "VCSEC handshake complete (counter=%u)",
                      (unsigned)sess.counter);
         }
 

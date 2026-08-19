@@ -104,7 +104,7 @@ int tesla_pb_encode_vcsec_status(uint8_t *out, size_t out_cap, size_t *out_len)
 }
 
 int tesla_pb_encode_vcsec_whitelist(const uint8_t pubkey[TESLA_PUBKEY_LEN],
-                                    uint32_t role, uint32_t seconds_to_be_active,
+                                    uint32_t role, uint32_t form_factor,
                                     uint8_t *out, size_t out_cap, size_t *out_len)
 {
     VCSEC_UnsignedMessage msg;
@@ -123,11 +123,54 @@ int tesla_pb_encode_vcsec_whitelist(const uint8_t pubkey[TESLA_PUBKEY_LEN],
     perm->has_key = true;
     perm->key.PublicKeyRaw.size = TESLA_PUBKEY_LEN;
     memcpy(perm->key.PublicKeyRaw.bytes, pubkey, TESLA_PUBKEY_LEN);
-    perm->secondsToBeActive = seconds_to_be_active;
+    perm->secondsToBeActive = 0;   // permanent key (reference leaves it unset)
     perm->keyRole = (Keys_Role)role;
+
+    // metadataForKey{keyFormFactor}: the car records how the key was enrolled.
+    msg.sub_message.WhitelistOperation.has_metadataForKey = true;
+    msg.sub_message.WhitelistOperation.metadataForKey.keyFormFactor =
+        (VCSEC_KeyFormFactor)form_factor;
 
     stream = pb_ostream_from_buffer(out, out_cap);
     if (!pb_encode(&stream, VCSEC_UnsignedMessage_fields, &msg)) {
+        return -1;
+    }
+    if (out_len != NULL) {
+        *out_len = stream.bytes_written;
+    }
+    return 0;
+}
+
+int tesla_pb_build_enrollment(const tesla_keypair_t *key, uint32_t role,
+                              uint32_t form_factor,
+                              uint8_t *out, size_t out_cap, size_t *out_len)
+{
+    uint8_t inner[256];
+    size_t inner_len = 0;
+    VCSEC_ToVCSECMessage env;
+    pb_ostream_t stream;
+
+    if (key == NULL || out == NULL) {
+        return -1;
+    }
+    // Inner application message: the addKey WhitelistOperation (UnsignedMessage).
+    if (tesla_pb_encode_vcsec_whitelist(key->pub, role, form_factor,
+                                        inner, sizeof(inner), &inner_len) != 0) {
+        return -1;
+    }
+
+    // Envelope: ToVCSECMessage{ SignedMessage{ protobufMessageAsBytes = inner,
+    //                                          signatureType = PRESENT_KEY } }.
+    // No signature is appended — the car authorizes the enrollment physically.
+    memset(&env, 0, sizeof(env));
+    env.has_signedMessage = true;
+    env.signedMessage.protobufMessageAsBytes.size = (pb_size_t)inner_len;
+    memcpy(env.signedMessage.protobufMessageAsBytes.bytes, inner, inner_len);
+    env.signedMessage.signatureType =
+        VCSEC_SignatureType_SIGNATURE_TYPE_PRESENT_KEY;
+
+    stream = pb_ostream_from_buffer(out, out_cap);
+    if (!pb_encode(&stream, VCSEC_ToVCSECMessage_fields, &env)) {
         return -1;
     }
     if (out_len != NULL) {
