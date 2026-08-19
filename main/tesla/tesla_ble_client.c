@@ -285,6 +285,9 @@ static esp_err_t refresh_status(tesla_session_t *sess, const char *vin,
             break;
         }
     }
+    if (got_status) {
+        return ESP_OK;
+    }
     if (errored) {
         ESP_LOGW(TAG, "GET_STATUS errored; reconnecting");
         return ESP_ERR_TIMEOUT;
