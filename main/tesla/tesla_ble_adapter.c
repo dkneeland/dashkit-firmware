@@ -460,7 +460,12 @@ static esp_err_t central_connect_start(const void *addr)
     params.itvl_min = 96;        // ~120 ms connection interval
     params.itvl_max = 160;       // ~200 ms
     params.latency = 0;
-    params.supervision_timeout = 400;  // 4 s
+    // 20 s supervision timeout (was 4 s). A car that is awake but silent while
+    // it awaits the owner's enrollment card-tap used to drop the link via 0x208
+    // (supervision timeout) well within the 60 s tap window; the pairing task
+    // also sends a periodic GATT-read keepalive (tesla_ble_keepalive) so the
+    // timeout never actually fires on a live-but-quiet link.
+    params.supervision_timeout = 2000;
     params.min_ce_len = 0;
     params.max_ce_len = 0;
 
@@ -552,6 +557,38 @@ esp_err_t tesla_ble_send(const uint8_t *data, size_t len)
         off += n;
     }
     return ESP_OK;
+}
+
+// Discard a keepalive read result; only its arrival matters (it resets the
+// connection's supervision timeout, proving the link is still alive).
+static int keepalive_read_cb(uint16_t conn_handle,
+                             const struct ble_gatt_error *error,
+                             struct ble_gatt_attr *attr, void *arg)
+{
+    (void)conn_handle;
+    (void)attr;
+    (void)arg;
+    if (error->status == 0 || error->att_handle == 0) {
+        /* a live link answered (a value or an ATT error both count) */
+    }
+    return 0;
+}
+
+// Keep the central link alive during a long, quiet wait (e.g. the owner's
+// NFC-card tap window) by issuing a GATT read of the vehicle status
+// characteristic. The read's ATT request/response is link-layer traffic, so it
+// resets the supervision timeout without injecting any data into the vehicle;
+// the result (a value or an ATT error) is irrelevant and never feeds the rx
+// (frame) path. Call periodically from a task. No-op when not connected.
+esp_err_t tesla_ble_keepalive(void)
+{
+    if (s_central.state != ST_READY || s_central.conn_handle == 0 ||
+        s_central.rx_handle == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    int rc = ble_gattc_read(s_central.conn_handle, s_central.rx_handle,
+                            keepalive_read_cb, NULL);
+    return rc == 0 ? ESP_OK : ESP_FAIL;
 }
 
 void tesla_ble_disconnect(void)

@@ -214,12 +214,22 @@ esp_err_t tesla_pairing_enroll(const tesla_keypair_t *key,
     }
 
     uint32_t start = xTaskGetTickCount();
+    uint32_t last_ka = 0;
     uint32_t info = 0;
     esp_err_t res = ESP_ERR_TIMEOUT;
     while ((uint32_t)(xTaskGetTickCount() - start) < pdMS_TO_TICKS(TAP_TIMEOUT_MS)) {
         uint8_t frame[RX_FRAME_MAX];
         size_t flen = 0;
         if (pairing_recv(frame, sizeof(frame), &flen, RESPONSE_TIMEOUT_MS) != ESP_OK) {
+            // Keep the link alive while the car silently awaits the tap: a GATT
+            // read every ~4 s generates ATT traffic that resets the connection
+            // supervision timer, so a quiet-but-awake car can't drop the link in
+            // the middle of the tap window (established on-car: reason 0x208).
+            uint32_t now = xTaskGetTickCount();
+            if (now - last_ka >= pdMS_TO_TICKS(4000)) {
+                last_ka = now;
+                tesla_ble_keepalive();
+            }
             continue;   // still waiting for the owner's tap
         }
         int r = pairing_ingest(frame, flen, &info);
