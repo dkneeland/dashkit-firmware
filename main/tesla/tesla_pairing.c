@@ -284,7 +284,6 @@ static tesla_car_addr_t s_car_addr;
 // Written by the app-channel host task (configure/reset) and read by the
 // pairing task; volatile to prevent the compiler caching it across the loop.
 static volatile bool s_configured;
-static volatile bool s_in_enrollment = false;
 
 esp_err_t tesla_pairing_configure(const char *vin, const tesla_car_addr_t *addr)
 {
@@ -321,7 +320,6 @@ esp_err_t tesla_pairing_start(void)
 esp_err_t tesla_pairing_cancel(void)
 {
     s_app_allowed = false;
-    s_in_enrollment = false;
     tesla_ble_disconnect();
     ESP_LOGI(TAG, "app cancel: enrollment stopped");
     return ESP_OK;
@@ -334,7 +332,6 @@ esp_err_t tesla_pairing_reset(void)
 {
     esp_err_t err = tesla_storage_erase_all();
     s_app_allowed = false;
-    s_in_enrollment = false;
     s_configured = false;
     tesla_ble_disconnect();
     ESP_LOGW(TAG, "app reset: Tesla key erased (re-stage + app re-trigger next)");
@@ -422,7 +419,6 @@ static void pairing_task(void *arg)
         }
 
         ESP_LOGI(TAG, "starting enrollment (VIN %s, role CHARGING_MANAGER)", s_vin);
-        s_in_enrollment = true;
         ble_appchan_report_status(TESLA_LINK_PAIRING_WINDOW, 0xFF, 0xFF, 0xFF, 0,
                                   TESLA_FAULT_NONE);
 
@@ -434,8 +430,7 @@ static void pairing_task(void *arg)
         tesla_keypair_t key;
         if (tesla_keypair_generate(&key, hw_rng, NULL) != 0) {
             ESP_LOGE(TAG, "keypair generation failed");
-            s_in_enrollment = false;
-            s_app_allowed = false;
+                s_app_allowed = false;
             ble_appchan_report_status(TESLA_LINK_ENROLLMENT_FAULT, 0xFF, 0xFF,
                                       0xFF, 0, TESLA_FAULT_PROTOCOL);
             continue;
@@ -460,7 +455,6 @@ static void pairing_task(void *arg)
                      attempt + 1, MAX_ATTEMPTS, esp_err_to_name(e), RETRY_DELAY_S);
             vTaskDelay(pdMS_TO_TICKS(RETRY_DELAY_S * 1000));
         }
-        s_in_enrollment = false;
 
         if (enrolled) {
             // Client poll loop now owns the link + status. Clear the trigger so
