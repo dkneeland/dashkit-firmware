@@ -161,9 +161,25 @@ esp_err_t tesla_storage_save_car_addr(const tesla_car_addr_t *addr)
     return err;
 }
 
-// Remove all Tesla state (factory reset / re-pair flow) is intentionally not
-// wired yet: it will be exposed behind a Phase 4 console command / app
-// `pair`-reset write rather than shipping dead today.
+// Remove all Tesla state. Phase 4 app-channel "reset Tesla key" command.
+esp_err_t tesla_storage_erase_all(void)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    // Erasing the namespace removes priv/pub/vin/addr/beacon_log/bootcnt.
+    err = nvs_erase_all(h);
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    if (err == ESP_OK) {
+        ESP_LOGW(TAG, "erased all Tesla state (re-stage + app re-trigger next)");
+    }
+    return err;
+}
 
 // ---- Onboard advertisement-name log ----
 //

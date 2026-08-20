@@ -5,6 +5,7 @@
 #include "tesla_ble_client.h"
 #include "tesla_ble_adapter.h"
 #include "tesla_ble_storage.h"
+#include "ble_appchan.h"
 #include "session.h"
 #include "protobuf_build.h"
 #include "vcsec.pb.h"
@@ -181,6 +182,30 @@ static const char *presence_name(int v)
     }
 }
 
+// App-channel (CADA0202) status reporting. link 0x00/0x05/0x03/0x04 are owned by
+// the pairing task (no key staged/pairing); this client owns 0x01/0x02 (enrolled,
+// not connected / connected + live status). Throttle non-connected reports so a
+// fast reconnect loop can't flood the phone.
+static uint8_t s_last_link = 0xFF;
+static void report_app_link(uint8_t link, int presence, int lock, int sleep)
+{
+    uint8_t p = 0xFF, l = 0xFF, s8 = 0xFF;
+    if (presence == VCSEC_UserPresence_E_VEHICLE_USER_PRESENCE_PRESENT) p = 1;
+    else if (presence == VCSEC_UserPresence_E_VEHICLE_USER_PRESENCE_NOT_PRESENT) p = 0;
+    if (lock == VCSEC_VehicleLockState_E_VEHICLELOCKSTATE_LOCKED) l = 1;
+    else if (lock == VCSEC_VehicleLockState_E_VEHICLELOCKSTATE_UNLOCKED) l = 0;
+    if (sleep == VCSEC_VehicleSleepStatus_E_VEHICLE_SLEEP_STATUS_ASLEEP) s8 = 1;
+    else if (sleep == VCSEC_VehicleSleepStatus_E_VEHICLE_SLEEP_STATUS_AWAKE) s8 = 0;
+
+    // Always refresh connected status (presence/lock/sleep change); throttle the
+    // rest so a brief gap doesn't spam identical 0x01 frames.
+    if (link == s_last_link && link != TESLA_LINK_ENROLLED_CONNECTED) {
+        return;
+    }
+    s_last_link = link;
+    ble_appchan_report_status(link, p, l, s8, 0, TESLA_FAULT_NONE);
+}
+
 // Build + send GET_STATUS and collect responses. Returns a terminal result so
 // the poll loop can stop early instead of firing polls at a dead link:
 //   ESP_OK            - a vehicleStatus (or terminal DONE) was obtained
@@ -265,6 +290,8 @@ static esp_err_t refresh_status(tesla_session_t *sess, const char *vin,
             got_status = true;
             ESP_LOGI(TAG, "status: presence=%s lock=%s sleep=%s",
                      presence_name(presence), lock_name(lock), sleep_name(sleep));
+            // Push to the phone app-channel (Phase 4).
+            report_app_link(TESLA_LINK_ENROLLED_CONNECTED, presence, lock, sleep);
             if (presence != *last_presence || lock != *last_lock || sleep != *last_sleep) {
                 ESP_LOGI(TAG, "status delta: presence %s->%s, lock %s->%s, sleep %s->%s",
                          presence_name(*last_presence), presence_name(presence),
@@ -342,6 +369,7 @@ static void client_task(void *arg)
                  addr.val[1], addr.val[0]);
         if (tesla_ble_connect(&addr, CONNECT_TIMEOUT_MS) != ESP_OK) {
             ESP_LOGW(TAG, "connect failed");
+            report_app_link(TESLA_LINK_ENROLLED_NOT_CONNECTED, -1, -1, -1);
             // Tear down any half-opened/ghost link (review S3) so the next
             // cycle starts from ST_IDLE instead of wedging the state machine.
             tesla_ble_disconnect();

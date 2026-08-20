@@ -46,6 +46,24 @@ bool tesla_pairing_is_target_vehicle(const char *name, size_t name_len);
 esp_err_t tesla_pairing_observe_vehicle(const char *name, size_t name_len,
                                         const tesla_car_addr_t *addr);
 
+// ---- Phase 4 app-channel control (app-triggered-only pairing) ----
+//
+// The DashKit sits in the car trim (LEDs not user-visible), so enrollment
+// starts ONLY on an explicit app command. The observer may stage a discovered
+// car (link_state TESLA_LINK_STAGED), but the pairing task waits here until
+// tesla_pairing_start() is called via the app-channel command 0x01.
+
+// Begin enrollment for the staged car. No-op / errors if no car is staged or a
+// key is already enrolled.
+esp_err_t tesla_pairing_start(void);
+
+// Cancel an in-progress (open tap-window) enrollment; returns to staged.
+esp_err_t tesla_pairing_cancel(void);
+
+// Factory-reset Tesla state (erase the enrolled key). The next car sighting
+// re-stages (TESLA_LINK_STAGED) and enrollment waits for an app start again.
+esp_err_t tesla_pairing_reset(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -31,6 +31,7 @@ idf_component_register(
         "automation/multi_finger.c"
         "ble/ble_server.c"
         "ble/ble_ota.c"
+        "ble/ble_appchan.c"
         ${TESLA_SRCS}
     INCLUDE_DIRS
         "."
