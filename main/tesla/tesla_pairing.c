@@ -69,6 +69,13 @@ typedef struct {
 
 static QueueHandle_t s_rxq;
 
+// App-triggered only (Phase 4): the pairing task runs enrollment ONLY while
+// this latch is set. Written by the app-channel host task (start/cancel/reset)
+// and read/cleared by the pairing task. volatile gives byte-atomic single-word
+// access on Xtensa; it is deliberately a simple one-way "go" latch, not a
+// mutex (a cancel just clears it and the task stops at its next check).
+static volatile bool s_app_allowed = false;
+
 // Hardware-RNG wrapper for keypair generation.
 static int hw_rng(void *ctx, uint8_t *buf, size_t len)
 {
@@ -215,6 +222,13 @@ static esp_err_t tesla_pairing_enroll(const tesla_keypair_t *key,
     uint32_t info = 0;
     esp_err_t res = ESP_ERR_TIMEOUT;
     while ((uint32_t)(xTaskGetTickCount() - start) < pdMS_TO_TICKS(TAP_TIMEOUT_MS)) {
+        // App-triggered-only: a cancel (0x03) clears s_app_allowed, so stop the
+        // tap wait immediately instead of keeping the window alive. The value
+        // returned here is ignored; the task disambiguates via !s_app_allowed.
+        if (!s_app_allowed) {
+            res = ESP_ERR_INVALID_STATE;
+            break;
+        }
         uint8_t frame[RX_FRAME_MAX];
         size_t flen = 0;
         if (pairing_recv(frame, sizeof(frame), &flen, RESPONSE_TIMEOUT_MS) != ESP_OK) {
@@ -267,11 +281,9 @@ static esp_err_t tesla_pairing_enroll(const tesla_keypair_t *key,
 
 static char s_vin[18];
 static tesla_car_addr_t s_car_addr;
-static bool s_configured;
-// App-triggered only (Phase 4): the pairing task runs enrollment ONLY while
-// this flag is set. Cleared on success, failure(give-up), or cancel. Set by
-// tesla_pairing_start() from the app-channel command task.
-static volatile bool s_app_allowed = false;
+// Written by the app-channel host task (configure/reset) and read by the
+// pairing task; volatile to prevent the compiler caching it across the loop.
+static volatile bool s_configured;
 static volatile bool s_in_enrollment = false;
 
 esp_err_t tesla_pairing_configure(const char *vin, const tesla_car_addr_t *addr)
@@ -431,8 +443,13 @@ static void pairing_task(void *arg)
 
         bool enrolled = false;
         esp_err_t last_err = ESP_ERR_TIMEOUT;
-        for (int attempt = 0; attempt < MAX_ATTEMPTS && !enrolled; attempt++) {
+        for (int attempt = 0; attempt < MAX_ATTEMPTS && !enrolled && s_app_allowed; attempt++) {
             esp_err_t e = tesla_pairing_enroll(&key, s_vin, &s_car_addr);
+            // A cancel (0x03) clears s_app_allowed, which makes enroll abort
+            // mid-window; stop immediately without retrying or surfacing a fault.
+            if (e != ESP_OK && !s_app_allowed) {
+                break;
+            }
             last_err = e;
             if (e == ESP_OK) {
                 ESP_LOGI(TAG, "enrollment complete; client poll loop takes over");
@@ -450,6 +467,12 @@ static void pairing_task(void *arg)
             // a dropped key doesn't auto-renroll later.
             s_app_allowed = false;
             s_configured = false;
+            continue;
+        }
+
+        if (!s_app_allowed) {
+            // Canceled by the app: return to staged (0x05) and await a fresh
+            // start — no fault is surfaced for a user-initiated cancel.
             continue;
         }
 

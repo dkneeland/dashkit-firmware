@@ -61,7 +61,8 @@ const struct ble_gatt_svc_def *ble_appchan_get_service_def(void);
 // any task once the stack is synced. `fault_detail` is ignored unless
 // `link_state == TESLA_LINK_ENROLLMENT_FAULT`.
 //
-// Frame (indicated on change):
+// Frame (notified on change — both this firmware and the Android app use GATT
+// notifications, CCCD 0x0001):
 //   [0] frame version = 0x01
 //   [1] link_state
 //   [2] presence           0 absent, 1 present, 0xFF unknown

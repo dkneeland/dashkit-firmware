@@ -33,6 +33,9 @@ static const ble_uuid128_t s_app_status_uuid = BLE_UUID128_INIT(
 );
 
 static uint16_t s_app_status_val_handle;
+// Last reported status frame; served on read so a subscribing app can learn
+// current state immediately instead of waiting up to a reconnect backoff.
+static uint8_t s_last_frame[7] = { 0x01, TESLA_LINK_NEVER_ENROLLED, 0xFF, 0xFF, 0xFF, 0, TESLA_FAULT_NONE };
 
 // ---------------------------------------------------------------------------
 // Command writes (CADA0201): [opcode][value_lo][value_hi?]
@@ -90,7 +93,9 @@ static int app_cmd_access(uint16_t conn_handle, uint16_t attr_handle,
     return 0;
 }
 
-// Status characteristic: notify-only, empty on read.
+// Status characteristic: notify-on-change + read of the last frame, so a phone
+// can learn current state immediately on subscribe (the pairing/client tasks
+// push updates on change, but a fresh subscriber shouldn't wait for the next one).
 static int app_status_access(uint16_t conn_handle, uint16_t attr_handle,
                              struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
@@ -99,7 +104,8 @@ static int app_status_access(uint16_t conn_handle, uint16_t attr_handle,
     (void)arg;
 
     if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
-        return 0;
+        return os_mbuf_append(ctxt->om, s_last_frame, sizeof(s_last_frame)) == 0
+               ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
     }
     return BLE_ATT_ERR_REQ_NOT_SUPPORTED;
 }
@@ -153,21 +159,24 @@ void ble_appchan_report_status(uint8_t link_state, uint8_t presence, uint8_t loc
                                uint8_t sleep, uint8_t flags, uint8_t fault_detail)
 {
     uint16_t conn = ble_server_get_conn_handle();
-    if (conn == BLE_HS_CONN_HANDLE_NONE || s_app_status_val_handle == 0) {
+    if (s_app_status_val_handle == 0) {
         return;
     }
 
-    uint8_t frame[7];
-    frame[0] = 0x01;  // frame version
-    frame[1] = link_state;
-    frame[2] = presence;
-    frame[3] = lock;
-    frame[4] = sleep;
-    frame[5] = flags;
-    frame[6] = (link_state == TESLA_LINK_ENROLLMENT_FAULT)
-               ? fault_detail : TESLA_FAULT_NONE;
+    s_last_frame[0] = 0x01;               // frame version
+    s_last_frame[1] = link_state;
+    s_last_frame[2] = presence;
+    s_last_frame[3] = lock;
+    s_last_frame[4] = sleep;
+    s_last_frame[5] = flags;
+    s_last_frame[6] = (link_state == TESLA_LINK_ENROLLMENT_FAULT)
+                      ? fault_detail : TESLA_FAULT_NONE;
 
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(frame, sizeof(frame));
+    if (conn == BLE_HS_CONN_HANDLE_NONE) {
+        return;
+    }
+
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(s_last_frame, sizeof(s_last_frame));
     if (om != NULL) {
         ble_gatts_notify_custom(conn, s_app_status_val_handle, om);
     }
