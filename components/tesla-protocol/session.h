@@ -16,6 +16,7 @@
 #include <stdint.h>
 
 #include "crypto.h"
+#include "vcsec.pb.h"
 
 // Signatures.Tag values (signatures.proto).
 #define TESLA_META_TAG_SIGNATURE_TYPE  0
@@ -123,3 +124,125 @@ int tesla_build_response_metadata(tesla_metadata_t *m, uint8_t domain,
 // -1 if tag_len exceeds TESLA_HMAC_LEN.
 int tesla_request_hash(uint8_t sig_type, const uint8_t *tag, size_t tag_len,
                        bool truncate_to_17, uint8_t *out, size_t *out_len);
+
+// ============================================================================
+// Phase 2: session state, handshake, command signing, and VCSEC response
+// handling. Ported from the Apache-2.0 vehicle-command reference
+// (internal/authentication/signer.go + verifier.go, internal/dispatcher).
+// ============================================================================
+
+// Local monotonic millisecond clock. The firmware passes a wrapper around
+// esp_timer_get_time(); host tests pass a deterministic source. Used only to
+// derive the vehicle-clock offset, never for trust (protocol.md §time).
+typedef uint64_t (*tesla_now_ms_fn)(void);
+
+// Authenticated session state for one vehicle domain. `counter` is the *next*
+// counter value to sign with (matching the reference: Encrypt increments then
+// uses). A session may be discarded and re-derived via the handshake at any
+// time; persisting it (Phase 3 storage) lets a later boot skip the handshake.
+typedef struct {
+    uint8_t  domain;                       // TESLA_DOMAIN_*
+    bool     valid;
+    uint8_t  epoch[TESLA_EPOCH_LEN];
+    uint32_t counter;                      // next counter (incremented pre-use)
+    uint32_t clock_time;                   // vehicle clock (s) at last sync
+    uint64_t sync_local_ms;                // local ms at last sync
+    uint8_t  shared_key[TESLA_SHARED_KEY_LEN];
+    uint8_t  client_pubkey[TESLA_PUBKEY_LEN];  // our own identity (signer)
+    uint8_t  vehicle_pubkey[TESLA_PUBKEY_LEN]; // peer identity (from SessionInfo)
+    uint32_t handle;                       // from SessionInfo
+    tesla_now_ms_fn now_ms;                // local clock source (may be NULL)
+    // Whether the enrolling SessionInfo reported this key as whitelisted.
+    // A valid-HMAC session can still be KEY_NOT_ON_WHITELIST (un-enrolled key);
+    // surfaced so the client can fire the proper canary instead of logging a
+    // misleading "handshake complete".
+    bool     whitelisted;
+    // Response anti-replay (per request, matching the reference's per-request
+    // window): after GCM authentication, a response whose counter is not
+    // strictly ahead of the highest authenticated counter for this request is
+    // rejected as a replay. Reset when each command is built (in
+    // tesla_session_build_command). The BLE link is reliable and ordered, so
+    // no out-of-order window is needed (YAGNI).
+    uint32_t replay_high;                  // highest authenticated counter seen (current request)
+    bool     replay_init;                  // false until first authenticated response
+} tesla_session_t;
+
+// "Expiration" applied to sent commands: how many vehicle-clock seconds a
+// signed command may remain valid. Matches the reference's 5 s default (the
+// vehicle rejects commands whose TTL exceeds its max, MESSAGEFAULT_ERROR_*);
+// the ~10 s value is the poll cadence, not the per-command TTL.
+#define TESLA_SESSION_VALIDITY_S 5
+
+void tesla_session_init(tesla_session_t *s, uint8_t domain, tesla_now_ms_fn now_ms);
+
+// Current vehicle-clock seconds, derived from the stored offset. Returns 0 if
+// the session is not valid.
+uint32_t tesla_session_now_vehicle_s(const tesla_session_t *s);
+
+// Build + encode the session_info_request RoutableMessage that starts a
+// handshake for `domain`. `routing` is a fresh 16-byte connection address and
+// `challenge` a fresh random 16 bytes (this becomes the RoutableMessage.uuid,
+// which the vehicle echoes so we can authenticate the response).
+int tesla_build_handshake_request(uint32_t domain,
+                                  const uint8_t client_pub[TESLA_PUBKEY_LEN],
+                                  const uint8_t routing[16],
+                                  const uint8_t challenge[16],
+                                  uint8_t *out, size_t out_cap, size_t *out_len);
+
+// Process a handshake response RoutableMessage (`resp`, unframed): parses
+// SessionInfo, verifies the session-info HMAC tag against `challenge`, derives
+// the shared key K via ECDH, and populates the session. `vin` is the 17-char
+// VIN used as the personalization. Returns 0 on success.
+int tesla_session_handshake(tesla_session_t *s, const tesla_keypair_t *key,
+                            const uint8_t *vin, size_t vin_len,
+                            const uint8_t challenge[16],
+                            const uint8_t *resp, size_t resp_len,
+                            tesla_rng_fn f_rng, void *p_rng);
+
+// Sign + encrypt + encode a command addressed to `domain`. `payload` is the
+// serialized application message (VCSEC.UnsignedMessage, CarServer.Action…).
+// On success `request_hash` holds the request hash (17 bytes for VCSEC) needed
+// to validate/decrypt the response, and the session counter advances.
+int tesla_session_build_command(tesla_session_t *s,
+                                const uint8_t *vin, size_t vin_len,
+                                uint8_t domain,
+                                const uint8_t *payload, size_t payload_len,
+                                const uint8_t routing[16], const uint8_t uuid[16],
+                                uint8_t *out, size_t out_cap, size_t *out_len,
+                                uint8_t request_hash[TESLA_HMAC_LEN + 1],
+                                size_t *request_hash_len,
+                                tesla_rng_fn f_rng, void *p_rng);
+
+// Process (validate + decrypt) a response RoutableMessage. `request_hash` is
+// the value returned by tesla_session_build_command for the matching request.
+// On success the decrypted (or plaintext, on older firmware) application
+// payload is written to payload_out and the protocol-layer fault (0 = none) to
+// *fault_out. Returns:
+//   0    success; payload_len set
+//   -1   message malformed / GCM auth failed
+//   -2   response carried proactive session info instead of an app payload
+//   -3   replayed response (counter did not advance)
+int tesla_session_process_response(tesla_session_t *s,
+                                   const uint8_t *vin, size_t vin_len,
+                                   const uint8_t *request_hash, size_t request_hash_len,
+                                   const uint8_t *resp, size_t resp_len,
+                                   uint8_t *payload_out, size_t payload_cap,
+                                   size_t *payload_len, uint32_t *fault_out);
+
+// ---- VCSEC multi-response / terminal state machine ----
+//
+// VCSEC may emit up to three responses to one request. Classify each response
+// to decide whether the client may stop collecting.
+typedef enum {
+    TESLA_VCSEC_PENDING = 0,  // wait for another response (WAIT / busy / empty-for-whitelist)
+    TESLA_VCSEC_STATUS,       // got a vehicleStatus payload (GET_STATUS answer)
+    TESLA_VCSEC_DONE,         // terminal success (OK / whitelist-op result)
+    TESLA_VCSEC_ERROR,        // terminal error (nominalError)
+} tesla_vcsec_phase_t;
+
+// Classify a single FromVCSECMessage per protocol.md §VCSEC application-layer
+// responses. VCSEC may emit up to three responses to one request; WAIT/ERROR
+// are non-terminal, a vehicleStatus is the STATUS answer, nominalError is a
+// terminal error, and everything else is terminal DONE. (Phase 2 GET_STATUS
+// scope only — the whitelist-pairing variant returns in Phase 3.)
+tesla_vcsec_phase_t tesla_vcsec_ingest(const VCSEC_FromVCSECMessage *m);

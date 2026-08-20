@@ -10,6 +10,8 @@
 #include "ble_server.h"
 #include "ble_ota.h"
 #include "tesla_ble_adapter.h"
+#include "tesla_ble_client.h"
+#include "tesla_pairing.h"
 
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -28,11 +30,16 @@
 #error "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE must be enabled (a crashing OTA image would brick the device)"
 #endif
 
-// Tesla BLE observer relies on the NimBLE observer role (scan-only in Phase 1;
-// the CENTRAL requirement arrives with Phase 2 and gets its own guard there).
+// Tesla BLE central client relies on the NimBLE observer + central roles.
+// Phase 1 needed only OBSERVER; Phase 2 adds CENTRAL (connect, discovery,
+// write/subscribe against the vehicle).
 #if defined(CONFIG_DASHKIT_TESLA_BLE) && \
     (!defined(CONFIG_BT_NIMBLE_ROLE_OBSERVER) || (CONFIG_BT_NIMBLE_ROLE_OBSERVER != 1))
 #error "CONFIG_DASHKIT_TESLA_BLE requires CONFIG_BT_NIMBLE_ROLE_OBSERVER (set CONFIG_BT_NIMBLE_ROLE_OBSERVER=y)"
+#endif
+#if defined(CONFIG_DASHKIT_TESLA_BLE) && \
+    (!defined(CONFIG_BT_NIMBLE_ROLE_CENTRAL) || (CONFIG_BT_NIMBLE_ROLE_CENTRAL != 1))
+#error "CONFIG_DASHKIT_TESLA_BLE requires CONFIG_BT_NIMBLE_ROLE_CENTRAL (set CONFIG_BT_NIMBLE_ROLE_CENTRAL=y)"
 #endif
 
 static const char *TAG = "main";
@@ -219,21 +226,17 @@ void app_main(void)
     ESP_ERROR_CHECK(ble_server_start());
 
 #if defined(CONFIG_DASHKIT_TESLA_BLE)
-    // Boot canary for the Tesla link (plan §5): the observer role must be
-    // visibly present, and the missing link/key must not be silent. Phase 1 has
-    // no NVS state yet — pairing + storage land in Phase 3 — so the canary just
-    // reports role state and starts the observer. Central is an `n` Kconfig
-    // symbol in Phase 1 (not defined), hence the guard.
-    {
-        int central = 0;
-#if defined(CONFIG_BT_NIMBLE_ROLE_CENTRAL)
-        central = CONFIG_BT_NIMBLE_ROLE_CENTRAL;
-#endif
-        ESP_LOGI(TAG, "Tesla BLE: enabled (observer=%d, central=%d). "
-                      "Scan-only in Phase 1; no link/key yet (pairing is Phase 3)",
-                 CONFIG_BT_NIMBLE_ROLE_OBSERVER, central);
-    }
-    ESP_ERROR_CHECK(tesla_ble_adapter_init());
+    // Boot canary for the Tesla link (plan §5): role state must be visible and
+    // a missing key/link must not be silent. Phase 3 enrollment populates the
+    // tesla NVS key/vin/mac; until then the pairing task waits for provisioning
+    // and the client task logs "no enrolled key".
+    ESP_LOGI(TAG, "Tesla BLE: enabled (observer=%d, central=%d). Observer scan "
+                  "+ client poll active; pairing (enrollment) runs when a "
+                  "key/link is not yet present.",
+             CONFIG_BT_NIMBLE_ROLE_OBSERVER, CONFIG_BT_NIMBLE_ROLE_CENTRAL);
+    ESP_ERROR_CHECK(tesla_ble_adapter_observer_init());
+    ESP_ERROR_CHECK(tesla_pairing_init());
+    ESP_ERROR_CHECK(tesla_ble_client_init());
 #endif
 
     // Bridge task: CAN -> BLE

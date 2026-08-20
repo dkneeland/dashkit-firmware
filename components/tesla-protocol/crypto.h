@@ -37,6 +37,14 @@
 #define TESLA_SHA1_LEN 20
 #define TESLA_SHA256_LEN 32
 
+// A client P-256 keypair: big-endian private scalar + uncompressed public
+// point (0x04 || X || Y). Persisted by the pairing/storage layer and passed to
+// the session layer for ECDH and for signer identity.
+typedef struct {
+    uint8_t priv[TESLA_PRIVKEY_LEN];
+    uint8_t pub[TESLA_PUBKEY_LEN];
+} tesla_keypair_t;
+
 // RNG callback using the mbedtls f_rng convention (returns 0 on success).
 typedef int (*tesla_rng_fn)(void *ctx, uint8_t *buf, size_t len);
 
@@ -95,3 +103,20 @@ int tesla_gcm_decrypt(const uint8_t k[TESLA_SHARED_KEY_LEN],
                       const uint8_t nonce[TESLA_NONCE_LEN],
                       const uint8_t tag[TESLA_GCM_TAG_LEN],
                       uint8_t *plaintext);
+
+// ============================================================================
+// Phase 3: key generation for present-key enrollment.
+//
+// Enrollment sends a VCSEC.ToVCSECMessage whose SignedMessage carries the new
+// public key and SIGNATURE_TYPE_PRESENT_KEY (see protobuf_build.c). The message
+// is NOT cryptographically signed by the firmware — the car authorizes the
+// enrollment physically (owner taps an NFC card + confirms on the touchscreen),
+// exactly as the Apache-2.0 vehicle-command reference's SendAddKeyRequestWithRole
+// does (it marshals the envelope and sends it with no appended signature; the
+// reference's Schnorr/P256 code is for Fleet-API JWT signing, not BLE).
+// ============================================================================
+
+// Generate a fresh NIST-P256 keypair into `key` (big-endian priv scalar + 65
+// bytes uncompressed pub). `f_rng`/`p_rng` must be a cryptographically strong
+// RNG (hardware RNG on-device). Returns 0 on success.
+int tesla_keypair_generate(tesla_keypair_t *key, tesla_rng_fn f_rng, void *p_rng);

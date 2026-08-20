@@ -23,13 +23,18 @@
 
 static const char *TAG = "beacon";
 
+static void start_advertising(void);
+
 static int gap_event_handler(struct ble_gap_event *event, void *arg)
 {
     (void)arg;
     switch (event->type) {
     case BLE_GAP_EVENT_ADV_COMPLETE:
-        /* Re-advertise forever (BLE_HS_FOREVER normally keeps it going, but
-         * restart on completion is harmless and self-healing). */
+        /* BLE_HS_FOREVER should keep advertising, so a completion here means
+         * the controller stopped us (e.g. after a reset). Restart to stay
+         * self-healing. */
+        ESP_LOGW(TAG, "advertising completed unexpectedly; restarting");
+        start_advertising();
         break;
     default:
         break;
@@ -59,7 +64,11 @@ static void start_advertising(void)
         return;
     }
 
-    ble_hs_id_infer_auto(0, &own_addr_type);   /* best available address     */
+    rc = ble_hs_id_infer_auto(0, &own_addr_type);   /* best available address */
+    if (rc != 0) {
+        ESP_LOGE(TAG, "infer own address failed: rc=%d", rc);
+        return;
+    }
     rc = ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER,
                            &adv_params, gap_event_handler, NULL);
     if (rc != 0 && rc != BLE_HS_EALREADY) {
