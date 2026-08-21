@@ -217,6 +217,13 @@ static esp_err_t tesla_pairing_enroll(const tesla_keypair_t *key,
         return ESP_FAIL;
     }
 
+    // The car armed its tap window the moment it accepted the request — only
+    // now tell the app, so its "tap your key card" countdown aligns with the
+    // real window. (Reporting it at task start would start the countdown before
+    // the DashKit has even connected to the car, leaving the tap out of sync.)
+    ble_appchan_report_status(TESLA_LINK_PAIRING_WINDOW, 0xFF, 0xFF, 0xFF, 0,
+                              TESLA_FAULT_NONE);
+
     uint32_t start = xTaskGetTickCount();
     uint32_t last_ka = 0;
     uint32_t info = 0;
@@ -419,8 +426,6 @@ static void pairing_task(void *arg)
         }
 
         ESP_LOGI(TAG, "starting enrollment (VIN %s, role CHARGING_MANAGER)", s_vin);
-        ble_appchan_report_status(TESLA_LINK_PAIRING_WINDOW, 0xFF, 0xFF, 0xFF, 0,
-                                  TESLA_FAULT_NONE);
 
         // Generate the keypair once and reuse it across attempts: if the owner
         // tapped + confirmed but the terminal response was lost, the retry
@@ -457,6 +462,13 @@ static void pairing_task(void *arg)
         }
 
         if (enrolled) {
+            // Tell the app enrollment succeeded IMMEDIATELY, so it leaves the
+            // tap-window right away. The client poll loop also reports
+            // 0x01/0x02, but only after a full connect->handshake->GET_STATUS
+            // cycle (10-30 s+ later); without this the app would hang on "tap
+            // your key card" even though the key is already on the car.
+            ble_appchan_report_status(TESLA_LINK_ENROLLED_NOT_CONNECTED, 0xFF, 0xFF,
+                                      0xFF, 0, TESLA_FAULT_NONE);
             // Client poll loop now owns the link + status. Clear the trigger so
             // a dropped key doesn't auto-renroll later.
             s_app_allowed = false;
