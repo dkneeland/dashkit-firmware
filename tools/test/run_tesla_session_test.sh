@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build (or reuse) a host mbedTLS 3.6.2 prefix and run the Tesla Phase 2
-# protocol round-trip test (tools/test/test_tesla_session.c) against the
-# commited nanopb bindings + crypto/session/protobuf_build layers.
+# Build (or reuse) a host mbedTLS 3.6.2 prefix and run the Tesla protocol
+# round-trip test (tools/test/test_tesla_session.c) against the committed
+# nanopb bindings + crypto/session/protobuf_build layers.
 #
 # Reuses the mbedTLS prefix built by run_tesla_crypto_test.sh so running all
 # three test scripts never rebuilds mbedTLS twice.

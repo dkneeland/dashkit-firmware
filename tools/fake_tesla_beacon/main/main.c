@@ -1,5 +1,5 @@
 /*
- * Fake Tesla BLE beacon (Phase 1 verification helper).
+ * Fake Tesla BLE beacon (advertisement-scan verification helper).
  *
  * A standalone ESP-IDF project that advertises a Tesla-format local name from
  * a spare ESP32-S3 board, so the firmware's observer can be verified without a

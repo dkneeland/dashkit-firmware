@@ -1,27 +1,14 @@
 /*
- * Tesla BLE storage — NVS persistence for the vehicle-command client state.
+ * Tesla BLE storage — NVS persistence for vehicle-command client state.
  *
- * Namespace "tesla" holds the pieces the Phase 2/3 central client needs across
- * reboots so it does not re-pair on every power cycle:
- *   - the enrolled client keypair (private + public scalar/point, raw bytes)
- *   - the 17-char VIN (personalization for every command)
- *   - the car's BLE address (so we connect directly instead of re-scanning)
+ * Namespace "tesla" persists the enrolled client keypair, the 17-char VIN, and
+ * the car's BLE address across reboots so the client does not re-pair on every
+ * power cycle. Written by the enrollment flow (tesla_pairing.c) and read by the
+ * client (tesla_storage_load_*) before each handshake.
  *
- * Phase 3 (pairing) writes these from its enrollment flow (tesla_pairing.c);
- * the Phase 2/3 client reads them (tesla_storage_load_*) so that once a key is
- * enrolled the handshake + GET_STATUS poll can run. Key generation/re-enrollment
- * land here too. (Session caching is deferred — the boot-relative clock cannot
- * carry the vehicle-clock offset across a reboot, so the client re-handshakes
- * each cycle; see the plan §Phase 3.)
- *
- * Matches the plan: "plaintext NVS private key initially (matches the ESPHome
- * reference)" — no key material is ever logged; flash-encryption / SE hardening
- * is the documented release-blocker risk (plan §7).
- *
- * RELEASE BLOCKER (do not ship a DRIVER-role build with this): the private key
- * lives plaintext in NVS. Flash encryption and/or a secure-element-backed key
- * must land before any production/DRIVER-role release (plan §7 / ADR §). See
- * plan §7 "release-blocker candidate".
+ * NOTE: the private key is stored PLAINTEXT in NVS. No key material is ever
+ * logged, but flash-encryption / secure-element hardening is a RELEASE BLOCKER
+ * before any production/DRIVER-role build.
  */
 
 #pragma once
@@ -57,8 +44,8 @@ esp_err_t tesla_storage_save_vin(const char *vin);
 esp_err_t tesla_storage_load_car_addr(tesla_car_addr_t *addr);
 esp_err_t tesla_storage_save_car_addr(const tesla_car_addr_t *addr);
 
-// Erase ALL Tesla state (keypair, pub, VIN, car address). Used by the Phase 4
-// app-channel "reset Tesla key" command (TESLA_CMD_RESET / 0x02). After this,
+// Erase ALL Tesla state (keypair, pub, VIN, car address). Used by the app-channel
+// "reset Tesla key" command (TESLA_CMD_RESET / 0x02). After this,
 // the observer re-stages on the next car sighting and enrollment waits for the
 // app to start it again. Never erases the phone<->DashKit BLE bonds (that is
 // ble_server_factory_reset's job).

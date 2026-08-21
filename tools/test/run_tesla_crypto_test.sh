@@ -2,10 +2,10 @@
 # Build mbedTLS 3.6.2 into a local prefix and run the Tesla crypto
 # known-answer unit test (tools/test/test_tesla_crypto.c) against it.
 #
-# Why build mbedTLS from source? Phase 0's whole point is validating the
-# mbedTLS 3.x API port (ESP-IDF 5.4.1 vendors 3.6.2). Ubuntu 24.04's
-# libmbedtls-dev is still 2.28.x, so we pin the exact 3.6.2 release and build
-# it locally. Works on any Linux host (CI ubuntu-latest) and in WSL.
+# Why build mbedTLS from source? The whole point is validating the mbedTLS
+# 3.x API port (ESP-IDF 5.4.1 vendors 3.6.2). Ubuntu 24.04's libmbedtls-dev
+# is still 2.28.x, so we pin the exact 3.6.2 release and build it locally.
+# Works on any Linux host (CI ubuntu-latest) and in WSL.
 #
 # Requires: gcc, make, curl.
 set -euo pipefail

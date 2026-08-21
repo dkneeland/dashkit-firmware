@@ -2,9 +2,7 @@
 
 Tesla vehicle-command protocol support for DashKit, built as an auto-discovered
 ESP-IDF component. Implements the client side of the vehicle-command BLE
-protocol per the Tesla BLE integration plan and ADR 0001 (the plan document
-and ADR live in the docs/ directory of the parent workspace that contains this
-firmware tree).
+protocol (matching the Apache-2.0 `teslamotors/vehicle-command` reference).
 
 ## Layout
 
@@ -14,15 +12,15 @@ firmware tree).
 | `session.c/.h` | metadata TLV sort/build, session-info auth, request hash |
 | `protos/` | Apache-2.0 `.proto` schemas from `teslamotors/vehicle-command`, pinned in `protos/VERSION` |
 | `nanopb/` | vendored nanopb 0.4.9.1 runtime (BSD-3-Clause) |
-| `generated/` | committed nanopb bindings (arrives in Phase 2) |
+| `generated/` | committed nanopb bindings |
 
-## Phase status (per the integration plan)
+## Status
 
-- **Phase 0 (this branch):** crypto + session layers, vendored protos/nanopb,
-  and a host-side unit test (`tools/test/test_tesla_crypto.c`) validating
-  against Tesla's published known-answer vectors. Nothing here touches BLE.
-- **Phase 2+:** nanopb bindings (`generated/`), protobuf builders, and the
-  NimBLE central adapter.
+- Crypto + session layers, vendored protos/nanopb, and a host-side unit test
+  (`tools/test/test_tesla_crypto.c`) validating against Tesla's published
+  known-answer vectors.
+- nanopb bindings (`generated/`), protobuf builders, and the NimBLE central
+  adapter (used by `main/tesla/`).
 
 ## Testing
 
@@ -42,4 +40,4 @@ and runs the known-answer tests. Requires gcc + make + curl on a Linux host
 - `crypto.c/.h`, `session.c/.h`, this file — project code, Apache-2.0
 
 No code from AGPL-licensed reference implementations (ESPHome fork, pmdroid)
-is included; they are treated as test-oracle-only per ADR 0001.
+is included; they are treated as test-oracles only.

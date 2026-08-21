@@ -1,18 +1,10 @@
 /*
- * Tesla BLE pairing — Phase 3 enrollment implementation.
- *
- * Enrollment is a one-time physical flow: the board generates a fresh P-256
- * keypair and sends a present-key addKeyToWhitelistAndAddPermissions request
- * over the central BLE link. The request is NOT cryptographically signed — the
- * car authorizes it physically: the owner taps an NFC card on the center
- * console and confirms on the touchscreen. So the pairing task keeps reading
- * responses until VCSEC reports the whitelist operation completed (or the tap
- * window times out), then persists the key.
- *
- * The enroll path reuses the tesla_ble_adapter central transport (connect,
- * length-framed send, frame RX callback); it does not touch the peripheral
- * server's GAP handler. On success the keypair + VIN + car address are
- * persisted so the Phase 2/3 client poll loop can handshake + GET_STATUS.
+ * Present-key enrollment: generate a P-256 keypair, send a present-key
+ * addKeyToWhitelistAndAddPermissions request over the central BLE link, and
+ * keep reading VCSEC responses until the whitelist operation completes or the
+ * tap window times out, then persist the key. Reuses the tesla_ble_adapter
+ * central transport (connect, length-framed send, frame RX callback).
+ * (The message is sent unsigned — see tesla_pairing.h for why that's safe.)
  */
 
 #include "tesla_pairing.h"
@@ -34,17 +26,14 @@
 
 static const char *TAG = "tesla_pairing";
 
-// Auto-provision target for the observer hook (handoff "Option B"): the car
-// this board is being enrolled against. A real Tesla's legacy local name is
-// "S" + first-16-hex-chars(SHA1(VIN)) + role letter (CHARGING_MANAGER here).
-// Matching the derived name — not "any Tesla" — ensures we only auto-enroll
-// against OUR car, never a random Tesla in range. Mapping verified on-air for
-// this VIN (handoff note): 5YJ3E1EB3MF074051 -> Sf9cd80ddffdd5492C.
-#define TESLA_TARGET_VIN  "5YJ3E1EB3MF074051"
-#define TESLA_TARGET_NAME "Sf9cd80ddffdd5492C"
+// Auto-provision target: only enroll against OUR car, matched by its derived
+// legacy name ("S" + first 16 hex chars of SHA1(VIN) + role letter). This is a
+// placeholder VIN — drive enrollment from the app (tesla_pairing_configure)
+// for any other car.
+#define TESLA_TARGET_VIN  "5YJ3E1EB8TF024681"
+#define TESLA_TARGET_NAME "S1481f4f405d98dfeC"
 
-// Enrolled role + form factor for the DashPilot key (plan §3): read + charge
-// only, presented as an Android-style device. DRIVER opt-in is Phase 5.
+// Enrolled role: read + charge only, presented as an Android-style device.
 #define ENROLL_ROLE        Keys_Role_ROLE_CHARGING_MANAGER
 #define ENROLL_FORM_FACTOR VCSEC_KeyFormFactor_KEY_FORM_FACTOR_ANDROID_DEVICE
 
@@ -56,8 +45,7 @@ static const char *TAG = "tesla_pairing";
 #define RETRY_DELAY_S       30
 #define MAX_ATTEMPTS        3
 #define CONFIG_WAIT_MS      1000
-// How often the task re-checks the app-allowed flag once a car is staged, so an
-// app "start" (0x01) is picked up almost immediately.
+// How often the task re-checks the app 'start' latch once a car is staged.
 #define STAGE_POLL_MS       200
 
 #define RX_FRAME_MAX 320
@@ -69,11 +57,9 @@ typedef struct {
 
 static QueueHandle_t s_rxq;
 
-// App-triggered only (Phase 4): the pairing task runs enrollment ONLY while
-// this latch is set. Written by the app-channel host task (start/cancel/reset)
-// and read/cleared by the pairing task. volatile gives byte-atomic single-word
-// access on Xtensa; it is deliberately a simple one-way "go" latch, not a
-// mutex (a cancel just clears it and the task stops at its next check).
+// App-triggered 'go' latch: enrollment runs only while this is set. Written by
+// the app-channel host task (start/cancel/reset), read/cleared by the pairing
+// task; volatile is enough for a one-word bool.
 static volatile bool s_app_allowed = false;
 
 // Hardware-RNG wrapper for keypair generation.
@@ -217,10 +203,8 @@ static esp_err_t tesla_pairing_enroll(const tesla_keypair_t *key,
         return ESP_FAIL;
     }
 
-    // The car armed its tap window the moment it accepted the request — only
-    // now tell the app, so its "tap your key card" countdown aligns with the
-    // real window. (Reporting it at task start would start the countdown before
-    // the DashKit has even connected to the car, leaving the tap out of sync.)
+    // Arm the tap window only now: reporting at task start would start the
+    // app's countdown before the car actually armed its window.
     ble_appchan_report_status(TESLA_LINK_PAIRING_WINDOW, 0xFF, 0xFF, 0xFF, 0,
                               TESLA_FAULT_NONE);
 
@@ -229,9 +213,7 @@ static esp_err_t tesla_pairing_enroll(const tesla_keypair_t *key,
     uint32_t info = 0;
     esp_err_t res = ESP_ERR_TIMEOUT;
     while ((uint32_t)(xTaskGetTickCount() - start) < pdMS_TO_TICKS(TAP_TIMEOUT_MS)) {
-        // App-triggered-only: a cancel (0x03) clears s_app_allowed, so stop the
-        // tap wait immediately instead of keeping the window alive. The value
-        // returned here is ignored; the task disambiguates via !s_app_allowed.
+        // A cancel (0x03) clears s_app_allowed: stop the tap wait immediately.
         if (!s_app_allowed) {
             res = ESP_ERR_INVALID_STATE;
             break;
@@ -304,9 +286,9 @@ esp_err_t tesla_pairing_configure(const char *vin, const tesla_car_addr_t *addr)
     return ESP_OK;
 }
 
-// App-triggered-only start (Phase 4). Requires a staged car; refuses while a
-// key is already enrolled. The pairing task picks s_app_allowed up on its next
-// loop iteration.
+// App-triggered-only start. Requires a staged car; refuses while a key is
+// already enrolled. The pairing task picks s_app_allowed up on its next loop
+// iteration.
 esp_err_t tesla_pairing_start(void)
 {
     if (tesla_storage_has_key()) {
@@ -353,12 +335,10 @@ bool tesla_pairing_is_target_vehicle(const char *name, size_t name_len)
            memcmp(name, TESLA_TARGET_NAME, want) == 0;
 }
 
-// Observer <> pairing handoff for APP-TRIGGERED enrollment: the observer only
-// STAGES the target car (reports TESLA_LINK_STAGED 0x05); it never starts
-// enrollment on its own. Runs on the NimBLE host task (discovery callback);
-// only writes the one-shot staging state, so the cross-task write to
-// s_configured is benign (a plain bool, and once set it short-circuits every
-// later sighting). The pairing task waits for tesla_pairing_start() (app 0x01).
+// Observer → pairing handoff: the observer only STAGES the target car (never
+// starts enrollment). Runs on the NimBLE host task but writes only this
+// one-shot staging bool, so the cross-task write to s_configured is benign.
+// The pairing task waits for tesla_pairing_start() (app 0x01).
 esp_err_t tesla_pairing_observe_vehicle(const char *name, size_t name_len,
                                         const tesla_car_addr_t *addr)
 {
@@ -400,9 +380,8 @@ static void pairing_task(void *arg)
             continue;
         }
 
-        // No key yet. Stage a known car if we have one cached (NVS-resume or a
-        // prior observer sighting / app flow) but NEVER begin on our own —
-        // app-triggered only (the DashKit's LEDs aren't a visible prompt).
+        // No key yet: stage a known car (NVS resume or observer sighting) but
+        // never begin on our own — the LEDs aren't a visible prompt.
         if (!s_configured) {
             if (tesla_storage_load_vin(s_vin, sizeof(s_vin)) == ESP_OK &&
                 strlen(s_vin) == 17 &&
@@ -435,7 +414,7 @@ static void pairing_task(void *arg)
         tesla_keypair_t key;
         if (tesla_keypair_generate(&key, hw_rng, NULL) != 0) {
             ESP_LOGE(TAG, "keypair generation failed");
-                s_app_allowed = false;
+            s_app_allowed = false;
             ble_appchan_report_status(TESLA_LINK_ENROLLMENT_FAULT, 0xFF, 0xFF,
                                       0xFF, 0, TESLA_FAULT_PROTOCOL);
             continue;
@@ -462,11 +441,9 @@ static void pairing_task(void *arg)
         }
 
         if (enrolled) {
-            // Tell the app enrollment succeeded IMMEDIATELY, so it leaves the
-            // tap-window right away. The client poll loop also reports
-            // 0x01/0x02, but only after a full connect->handshake->GET_STATUS
-            // cycle (10-30 s+ later); without this the app would hang on "tap
-            // your key card" even though the key is already on the car.
+            // Report success now so the app leaves the tap screen; the client
+            // poll loop's own status arrives only after a full
+            // connect→handshake→GET_STATUS cycle.
             ble_appchan_report_status(TESLA_LINK_ENROLLED_NOT_CONNECTED, 0xFF, 0xFF,
                                       0xFF, 0, TESLA_FAULT_NONE);
             // Client poll loop now owns the link + status. Clear the trigger so

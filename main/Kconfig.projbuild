@@ -1,7 +1,7 @@
 # DashKit project-configuration menu.
 #
-# CONFIG_DASHKIT_TESLA_BLE gates the Tesla BLE vehicle-command client. Phase 2
-# adds the CENTRAL role: connect → VCSEC handshake → GET_STATUS poll →
+# CONFIG_DASHKIT_TESLA_BLE gates the Tesla BLE vehicle-command client: the
+# CENTRAL role does connect → VCSEC handshake → GET_STATUS poll →
 # idle-disconnect, backed by main/tesla/ (observer + central adapter, storage,
 # client) and the tesla-protocol component. Disabling the option removes the
 # tesla/ modules and the BLE observer + central roles from the build, so the
@@ -14,7 +14,7 @@ menu "DashKit"
         select BT_NIMBLE_ROLE_CENTRAL
         default y
         help
-            Adds the Tesla BLE vehicle-command client (Phase 2: connect, VCSEC
+            Adds the Tesla BLE vehicle-command client (connect, VCSEC
             handshake, GET_STATUS, idle-disconnect) plus the observer listener.
             Disabling removes the tesla/ modules and the observer+central roles
             from the build.

@@ -5,7 +5,7 @@
 # bindings (generated/, produced by tools/gen_proto.py — committed so a clean
 # checkout builds without protoc). Implements the crypto/session layer
 # (crypto.c, session.c), the protobuf message builders (protobuf_build.c), and
-# the Phase 2 handshake/command/response logic, on the ESP-IDF mbedTLS 3.x
+# the handshake/command/response logic, on the ESP-IDF mbedTLS 3.x
 # component.
 
 idf_component_register(
@@ -13,9 +13,9 @@ idf_component_register(
         "crypto.c"
         "session.c"
         "protobuf_build.c"
-        # Phase 2 generates the VCSEC + handshake message set only; the
-        # Infotainment protos (car_server/vehicle/managed_charging) join in
-        # Phase 4 with a vendored google/protobuf/timestamp binding.
+        # The VCSEC + handshake message set only; the Infotainment protos
+        # (car_server/vehicle/managed_charging) join with a vendored
+        # google/protobuf/timestamp binding.
         "generated/errors.pb.c"
         "generated/keys.pb.c"
         "generated/signatures.pb.c"

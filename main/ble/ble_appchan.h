@@ -1,20 +1,18 @@
 /*
- * DashPilot app-channel GATT service (CADA02xx) — Phase 4.
+ * DashPilot app-channel GATT service (CADA02xx).
  *
  * Exposes the DashKit's Tesla BLE state to the phone app over the existing
- * phone<->DashKit bond (link 1), WITHOUT touching the phone<->DashKit pairing
- * itself or the CAN->BLE path. Because the DashKit is installed inside the car
- * trim, its physical LEDs are not user-visible, so this service is the sole
- * surface for Tesla status and pairing control.
+ * phone<->DashKit bond, without touching phone pairing or the CAN->BLE path.
+ * The DashKit sits inside the car trim (its LEDs are not user-visible), so
+ * this service is the sole surface for Tesla status and pairing control.
  *
  *   Service  CADA0200-CA00-B1E0-B0D6-C000AA0100A1
- *   Command  CADA0201 (write, encrypted)   [opcode][value_lo][value_hi?]
- *   Status   CADA0202 (notify, encrypted)  see report_status frame
+ *   Command  CADA0201 (write, encrypted)
+ *   Status   CADA0202 (notify, encrypted)
  *
- * Pairing is app-triggered only (decided 2026-08-20): the firmware observer may
- * stage a discovered car (link_state TESLA_LINK_STAGED) but the pairing task
- * launches only on TESLA_CMD_START and cancels on TESLA_CMD_CANCEL. See
- * tesla-ble-app-ux-handoff.md / tesla-ble-integration-plan.md Phase 4.
+ * Pairing is app-triggered only: the observer may stage a discovered car
+ * (TESLA_LINK_STAGED), but enrollment launches only on TESLA_CMD_START and
+ * cancels on TESLA_CMD_CANCEL.
  */
 
 #pragma once

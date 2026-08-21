@@ -31,9 +31,8 @@
 #error "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE must be enabled (a crashing OTA image would brick the device)"
 #endif
 
-// Tesla BLE central client relies on the NimBLE observer + central roles.
-// Phase 1 needed only OBSERVER; Phase 2 adds CENTRAL (connect, discovery,
-// write/subscribe against the vehicle).
+// Tesla BLE central client relies on the NimBLE observer + central roles
+// (observer scan for the car; central for connect/discovery/write).
 #if defined(CONFIG_DASHKIT_TESLA_BLE) && \
     (!defined(CONFIG_BT_NIMBLE_ROLE_OBSERVER) || (CONFIG_BT_NIMBLE_ROLE_OBSERVER != 1))
 #error "CONFIG_DASHKIT_TESLA_BLE requires CONFIG_BT_NIMBLE_ROLE_OBSERVER (set CONFIG_BT_NIMBLE_ROLE_OBSERVER=y)"
@@ -228,10 +227,10 @@ void app_main(void)
     ESP_ERROR_CHECK(ble_server_start());
 
 #if defined(CONFIG_DASHKIT_TESLA_BLE)
-    // Boot canary for the Tesla link (plan §5): role state must be visible and
-    // a missing key/link must not be silent. Phase 3 enrollment populates the
-    // tesla NVS key/vin/mac; until then the pairing task waits for provisioning
-    // and the client task logs "no enrolled key".
+    // Boot canary for the Tesla link: role state must be visible and a missing
+    // key/link must not be silent. Enrollment populates the tesla NVS
+    // key/vin/mac; until then the pairing task waits for provisioning and the
+    // client task logs "no enrolled key".
     ESP_LOGI(TAG, "Tesla BLE: enabled (observer=%d, central=%d). Observer scan "
                   "+ client poll active; pairing (enrollment) runs when a "
                   "key/link is not yet present.",

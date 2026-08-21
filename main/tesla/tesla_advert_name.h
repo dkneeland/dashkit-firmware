@@ -1,24 +1,17 @@
 /*
- * Tesla BLE advertisement-name matcher (Phase 1, scan-only spike).
+ * Tesla BLE advertisement-name matcher.
  *
  * A Tesla advertises under one of two documented formats (vehicle-command
- * protocol.md / ADR 0001):
+ * protocol.md):
  *
- *   Legacy (pre ~mid-2023): "S" + first 8 bytes (16 hex chars) of SHA1(VIN) + role
- *     (the trailing letter has been observed as C / R / D / P). On-air real car
- *     (5YJ3E1EB3MF074051 -> Sf9cd80ddffdd5492C). NOTE: an 8-hex (10-char) form is
- *     NOT a real Tesla broadcast — it was only the original dev/test fake beacon.
- *   Modern (since ~mid-2023): "Tesla " + last 6 characters of the VIN.
+ *   Legacy: "S" + first 16 hex chars of SHA1(VIN) + role letter (C/R/D/P),
+ *     e.g. 5YJ3E1EB8TF024681 -> S1481f4f405d98dfeC. The 8-hex
+ *     (10-char) form is NOT a real broadcast — it was the dev/test fake beacon.
+ *   Modern: "Tesla " + last 6 characters of the VIN.
  *
- * This module only knows the SHAPE of those names (and, for the modern form,
- * the VIN character alphabet). It does not need the vehicle's VIN or any
- * crypto, so it is pure C and compiles into the host test suite unchanged
- * (see tools/test/test_tesla_advert_name.c).
- *
- * The matcher is shape-only by design for the Phase 1 done-when (print the
- * name+MAC of any nearby Tesla from advertisements). Binding a found vehicle
- * to OUR stored VIN (via SHA1(VIN) for the legacy format, or a direct suffix
- * match for the modern format) belongs to Phase 2+ once a VIN is persisted.
+ * Shape-only (no VIN, no crypto), so it compiles into the host test suite
+ * unchanged (tools/test/test_tesla_advert_name.c); binding a found vehicle to
+ * OUR stored VIN is done by the caller, not here.
  */
 #ifndef TESLA_ADVERT_NAME_H
 #define TESLA_ADVERT_NAME_H

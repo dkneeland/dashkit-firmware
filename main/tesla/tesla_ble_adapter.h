@@ -1,16 +1,16 @@
 /*
  * Tesla BLE adapter: NimBLE *central* connection to the vehicle-command GATT
- * service, plus the Phase 1 observer scan.
+ * service, plus the observer scan.
  *
- * Owns the entire central GAP path (ADR 0001 review note 2): a scan callback,
- * a connect callback, a GATT discovery flow, and the vehicle notification
- * (indicate) handler live here — entirely separate from the peripheral GATT
- * server's gap_event_handler in main/ble/ble_server.c. A central connection
- * event must never feed the server's slot table.
+ * Owns the entire central GAP path: a scan callback, a connect callback, a
+ * GATT discovery flow, and the vehicle notification (indicate) handler —
+ * entirely separate from the peripheral GATT server's gap_event_handler in
+ * main/ble/ble_server.c. A central connection event must never feed the
+ * server's slot table.
  *
- * One car link is supported at a time; the client connects → exchanges → sends
- * → disconnects (idle-disconnect is load-bearing, plan §6). Messages are
- * framed with the 2-byte big-endian length prefix the vehicle expects.
+ * One car link at a time; the client connects → exchanges → sends →
+ * disconnects (idle-disconnect). Messages are framed with the 2-byte
+ * big-endian length prefix the vehicle expects.
  */
 
 #pragma once
@@ -29,9 +29,9 @@ extern "C" {
 // vehicle (i.e. the RoutableMessage bytes, with the framing stripped).
 typedef void (*tesla_ble_rx_fn_t)(const uint8_t *data, size_t len, void *arg);
 
-// Starts the Phase 1 observer scan (logs nearby Tesla advertisements). Safe to
-// call once at boot; the scan runs continuously and is independent of the
-// central connect path.
+// Starts the observer scan (logs nearby Tesla advertisements). Safe to call
+// once at boot; the scan runs continuously and is independent of the central
+// connect path.
 esp_err_t tesla_ble_adapter_observer_init(void);
 
 // Registers the frame receive callback used by the central connection.
@@ -48,10 +48,9 @@ esp_err_t tesla_ble_connect(const void *addr, uint32_t timeout_ms);
 // chunk is written.
 esp_err_t tesla_ble_send(const uint8_t *data, size_t len);
 
-// Keep the central link alive during a long, quiet wait (the owner's NFC-card
-// tap window): issues a GATT read of the vehicle status characteristic, whose
-// request/response traffic resets the link supervision timeout without
-// injecting data. Fire periodically from a task; no-op when not connected.
+// Keep a quiet link alive (e.g. the enrollment tap window): a GATT read
+// resets the supervision timeout without injecting data. Fire from a task;
+// no-op when not connected.
 esp_err_t tesla_ble_keepalive(void);
 
 // Terminate the central link (idle-disconnect / error). Safe to call when not

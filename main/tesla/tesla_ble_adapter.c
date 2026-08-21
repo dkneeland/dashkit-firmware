@@ -1,12 +1,11 @@
 /*
  * Tesla BLE adapter — NimBLE central connection to the vehicle-command GATT
- * service.
+ * service, plus the observer scan.
  *
- * Phase 1 added observer scanning; Phase 2 adds the central path. This module
- * keeps the two strictly separate (ADR 0001 review note 2): the observer's
- * discovery handler and this central connect callback never feed the
- * peripheral server's slot table in main/ble/ble_server.c. Idle-disconnect
- * (connect → exchange → send → disconnect) is load-bearing per plan §6.
+ * Keeps the two roles strictly separate: the observer's discovery handler and
+ * this central connect callback never feed the peripheral server's slot table
+ * in main/ble/ble_server.c. Central is connect → exchange → send → disconnect
+ * (idle-disconnect).
  */
 
 #include "tesla_ble_adapter.h"
@@ -63,7 +62,7 @@ static struct {
 } s_central;
 
 // ---------------------------------------------------------------------------
-// Observer scan (Phase 1) — independent of the central path.
+// Observer scan — independent of the central path.
 // ---------------------------------------------------------------------------
 static int discovery_event_handler(struct ble_gap_event *event, void *arg)
 {
@@ -87,9 +86,8 @@ static int discovery_event_handler(struct ble_gap_event *event, void *arg)
     fmt = tesla_advert_name_format(fields.name, fields.name_len);
     mac = disc->addr.val;
     if (fmt != TESLA_NAME_NONE) {
-        // The name/format is the feature's primary output, so keep it at INFO.
-        // The full MAC is more identifying (a beacon is linkable across scans),
-        // so gate it behind debug per the review privacy note.
+        // The name/format is the feature output, keep it INFO; the full MAC is
+        // linkable across scans, so gate it behind debug.
         ESP_LOGI(TAG, "Tesla vehicle found: name=\"%.*s\" (format=%s), rssi=%d",
                  (int)fields.name_len, (const char *)fields.name, fmt_str[fmt],
                  (int)disc->rssi);
@@ -102,12 +100,9 @@ static int discovery_event_handler(struct ble_gap_event *event, void *arg)
                  (int)fields.name_len, (const char *)fields.name, (int)disc->rssi,
                  mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
     }
-    // Phase 3 auto-provision (unattended enrollment): if this is OUR car (by
-    // VIN-derived name), feed the pairing task the address we just discovered
-    // plus the target VIN, so enrollment arms itself with no console/app input.
-    // No-op unless the name matches the configured target and no key is
-    // enrolled yet. tesla_car_addr_t has the same {type, val[6]} layout as
-    // ble_addr_t, so a direct copy is safe.
+    // If this is OUR car (name match), feed the pairing task the discovered
+    // address + target VIN so it can stage. tesla_car_addr_t has the same
+    // {type, val[6]} layout as ble_addr_t, so a direct copy is safe.
     if (fmt != TESLA_NAME_NONE) {
         tesla_car_addr_t addr;
         memcpy(&addr, &disc->addr, sizeof(addr));
@@ -131,18 +126,14 @@ static esp_err_t start_scan(void)
         own_addr_type = BLE_OWN_ADDR_PUBLIC;
     }
     memset(&params, 0, sizeof(params));
-    // Active scan: the local name may be delivered in ADV_IND or SCAN_RSP,
-    // and passive scanning only ever sees the former (review finding). Active
-    // scanning sends a SCAN_REQ and so surfaces either case. Harmless here —
-    // DashKit already advertises as a peripheral, so the extra scan requests
-    // don't conflict.
+    // Active scan: the name may be in ADV_IND or SCAN_RSP; passive only ever
+    // sees ADV_IND. Harmless here since DashKit already advertises as a
+    // peripheral.
     params.passive = 0;
     params.filter_duplicates = 1;
     params.filter_policy = BLE_HCI_SCAN_FILT_NO_WL;
-    // Explicit scan cadence (0.625 ms units): ~30 ms interval, ~12.5 ms
-    // window. Window < interval so the forever-scan doesn't run at full duty;
-    // before, these were left 0 and silently picked up NimBLE's fast-scan
-    // defaults.
+    // Explicit cadence (~30 ms interval / ~12.5 ms window) so the forever-scan
+    // never runs at full duty (zeros previously picked up fast-scan defaults).
     params.itvl = 0x30;      /* 0x30 * 0.625 ms = 30 ms scan interval */
     params.window = 0x14;    /* 0x14 * 0.625 ms = 12.5 ms active window */
 
@@ -163,11 +154,9 @@ static void scan_wait_task(void *arg)
 {
     (void)arg;
     for (;;) {
-        // Wait for a synced host. A host/controller reset drops sync and
-        // re-enters this loop, so the observer re-arms itself after a reset
-        // instead of silently never scanning again. ble_server.c's on_sync()
-        // only restarts advertising and is peripheral-only, so the Tesla scan
-        // can't lean on it (and this module must not touch ble_hs_cfg).
+        // Wait for a synced host; a host/controller reset re-enters this loop so the
+        // observer re-arms itself. ble_server.c's on_sync() is peripheral-only,
+        // so the Tesla scan can't lean on it.
         while (!ble_hs_synced()) {
             s_central.observer_running = false;
             vTaskDelay(pdMS_TO_TICKS(50));
@@ -179,9 +168,8 @@ static void scan_wait_task(void *arg)
                 ESP_LOGE(TAG, "Tesla observer failed to start scanning");
             }
         }
-        // Park until sync is lost (host reset) or the central path has taken
-        // over the controller. The central idle-disconnect re-arms the scan in
-        // central_fail_cleanup(), so there is nothing to do here meanwhile.
+        // Park until sync is lost (host reset); the central path re-arms the
+        // scan in central_fail_cleanup().
         while (ble_hs_synced()) {
             vTaskDelay(pdMS_TO_TICKS(200));
         }
@@ -296,11 +284,9 @@ static int mtu_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
     return 0;
 }
 
-// Subscribe to the vehicle status characteristic (write to its CCCD). Value
-// 0x0003 enables BOTH notifications and indications: the reference uses
-// indications, but the working ESPHome/BLE path pushes replies as
-// notifications, so enabling both covers either delivery for the session/status
-// replies without ambiguity.
+// Subscribe to the status characteristic: CCCD 0x0003 = notifications +
+// indications. The reference uses indications, but the working ESPHome/BLE
+// path pushes notifications, so enable both.
 static void subscribe_indicate(uint16_t conn_handle)
 {
     const uint8_t cccd[2] = { 0x03, 0x00 };   // enable notifications + indications
@@ -383,10 +369,8 @@ static int central_gap_event_handler(struct ble_gap_event *event, void *arg)
             break;
         }
         s_central.conn_handle = event->connect.conn_handle;
-        // A straggler from a timed-out/cancelled connect (review S3): the
-        // waiter gave up or we cancelled, so drop it now before entering
-        // discovery — otherwise it would wedge the state machine at
-        // ST_DISCOVERING forever and leak a scarce BLE slot.
+        // A straggler from a timed-out/cancelled connect: drop it before
+        // discovery so it can't wedge the state machine or leak a BLE slot.
         if (s_central.state == ST_IDLE) {
             ESP_LOGW(TAG, "dropping late central connection (timed out/cancelled)");
             ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
@@ -449,11 +433,9 @@ static esp_err_t central_connect_start(const void *addr)
     params.itvl_min = 96;        // ~120 ms connection interval
     params.itvl_max = 160;       // ~200 ms
     params.latency = 0;
-    // 20 s supervision timeout (was 4 s). A car that is awake but silent while
-    // it awaits the owner's enrollment card-tap used to drop the link via 0x208
-    // (supervision timeout) well within the 60 s tap window; the pairing task
-    // also sends a periodic GATT-read keepalive (tesla_ble_keepalive) so the
-    // timeout never actually fires on a live-but-quiet link.
+    // 20 s supervision timeout: a silent-but-awake car in the enrollment tap
+    // window used to drop the link (0x208) within the 60 s window; the pairing
+    // task's GATT-read keepalive (tesla_ble_keepalive) keeps a live link fresh.
     params.supervision_timeout = 2000;
     params.min_ce_len = 0;
     params.max_ce_len = 0;
@@ -496,9 +478,8 @@ esp_err_t tesla_ble_connect(const void *addr, uint32_t timeout_ms)
         if (s_central.conn_handle != 0) {
             ble_gap_terminate(s_central.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
         } else {
-            // Connection request still pending at the controller: cancel it so
-            // no late CONNECT event can arrive and wedge the state machine
-            // (review S3).
+            // Request still pending: cancel it so no late CONNECT event can wedge
+            // the state machine.
             ble_gap_conn_cancel();
         }
         s_central.state = ST_IDLE;

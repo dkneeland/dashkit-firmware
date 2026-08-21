@@ -5,9 +5,9 @@ Vendored Tesla protocol schemas from `teslamotors/vehicle-command`
 [`VERSION`](VERSION); update both together when bumping.
 
 These files are the schema source for the nanopb bindings committed under
-`../generated/` (Phase 2+). No vehicle-command *Go* code is vendored here;
+`../generated/`. No vehicle-command *Go* code is vendored here;
 the reference implementation is Apache-2.0 and is only used to cross-check the
-crypto layer (see the Phase 0 unit test in `tools/test/test_tesla_crypto.c`).
+crypto layer (see the unit test in `tools/test/test_tesla_crypto.c`).
 
 ## Files
 

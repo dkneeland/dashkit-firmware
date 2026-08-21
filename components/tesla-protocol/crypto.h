@@ -65,13 +65,9 @@ int tesla_hmac_sha256_2(const uint8_t *key, size_t key_len,
 // Returns true iff a and b are identical over len bytes.
 bool tesla_ct_equal(const uint8_t *a, const uint8_t *b, size_t len);
 
-// K = SHA1(X-coordinate of ECDH(priv, peer_pub))[:16].
-//
-// The peer public key is checked to be a valid point on NIST-P256 before the
-// scalar multiply (invalid-curve hardening). f_rng feeds mbedTLS' ECDH
-// blinding (mandatory in mbedTLS 3.x); correctness of the shared secret does
-// not depend on RNG quality. The firmware passes a hardware-RNG-backed
-// callback; the host test passes a deterministic one.
+// K = SHA1(X-coordinate of ECDH(priv, peer_pub))[:16]. Verifies the peer point
+// is on NIST-P256 first (invalid-curve hardening). f_rng feeds mbedTLS' ECDH
+// blinding (mandatory in 3.x); correctness does not depend on RNG quality.
 int tesla_derive_shared_key(const uint8_t priv[TESLA_PRIVKEY_LEN],
                             const uint8_t peer_pub[TESLA_PUBKEY_LEN],
                             tesla_rng_fn f_rng, void *p_rng,
@@ -105,15 +101,12 @@ int tesla_gcm_decrypt(const uint8_t k[TESLA_SHARED_KEY_LEN],
                       uint8_t *plaintext);
 
 // ============================================================================
-// Phase 3: key generation for present-key enrollment.
+// Key generation for present-key enrollment.
 //
-// Enrollment sends a VCSEC.ToVCSECMessage whose SignedMessage carries the new
-// public key and SIGNATURE_TYPE_PRESENT_KEY (see protobuf_build.c). The message
-// is NOT cryptographically signed by the firmware — the car authorizes the
-// enrollment physically (owner taps an NFC card + confirms on the touchscreen),
-// exactly as the Apache-2.0 vehicle-command reference's SendAddKeyRequestWithRole
-// does (it marshals the envelope and sends it with no appended signature; the
-// reference's Schnorr/P256 code is for Fleet-API JWT signing, not BLE).
+// The PRESENT_KEY message is sent unsigned — the car authorizes the enrollment
+// physically (owner taps an NFC card + confirms on the touchscreen), exactly as
+// the reference's SendAddKeyRequestWithRole does (it sends the envelope with no
+// appended signature).
 // ============================================================================
 
 // Generate a fresh NIST-P256 keypair into `key` (big-endian priv scalar + 65

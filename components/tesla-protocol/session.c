@@ -218,8 +218,8 @@ int tesla_request_hash(uint8_t sig_type, const uint8_t *tag, size_t tag_len,
 }
 
 // ============================================================================
-// Phase 2: session state, handshake, command signing, response processing,
-// and the VCSEC multi-response classifier.
+// Session state, handshake, command signing, response processing, and the
+// VCSEC multi-response classifier.
 // ============================================================================
 
 void tesla_session_init(tesla_session_t *s, uint8_t domain, tesla_now_ms_fn now_ms)
@@ -254,11 +254,9 @@ int tesla_build_handshake_request(uint32_t domain,
                                      out, out_cap, out_len);
 }
 
-// Derives K from the client keypair and the vehicle public key, then verifies
-// the session-info HMAC tag against the challenge we sent. Shared by the
-// initial handshake and (Phase 6) resync updates. On success also returns the
-// decoded SessionInfo (epoch/counter/clock/status) so the caller need not
-// decode it a second time.
+// Derive K from the client keypair + vehicle public key, verify the
+// session-info HMAC tag, and hand back the decoded SessionInfo so callers
+// don't re-decode it.
 static int verify_session_info(const tesla_keypair_t *key,
                                const uint8_t *vin, size_t vin_len,
                                const uint8_t challenge[16],
@@ -364,9 +362,8 @@ int tesla_session_handshake(tesla_session_t *s, const tesla_keypair_t *key,
     memcpy(s->shared_key, k, TESLA_SHARED_KEY_LEN);
     memcpy(s->client_pubkey, key->pub, TESLA_PUBKEY_LEN);
     memcpy(s->vehicle_pubkey, pub, TESLA_PUBKEY_LEN);
-    // status defaults to OK when omitted; only KEY_NOT_ON_WHITELIST (1) means
-    // the key isn't enrolled. The adversary can't forge this: it's covered by
-    // the session-info HMAC we just verified.
+    // Defaults to OK; only KEY_NOT_ON_WHITELIST (1) means un-enrolled — and
+    // this is covered by the HMAC just verified.
     s->whitelisted =
         (info.status == Signatures_Session_Info_Status_SESSION_INFO_STATUS_OK);
     // Fresh replay window: not primed until the first authenticated response.
@@ -502,11 +499,9 @@ int tesla_session_build_command(tesla_session_t *s,
     return 0;
 }
 
-// Anti-replay (per request): only ever called for a response whose GCM tag has
-// verified (C1: an unauthenticated frame cannot advance it). The BLE link is
-// reliable and ordered, so only require strictly-newer counters — no sliding
-// out-of-order window (YAGNI). The signed comparison is wraparound-safe across
-// uint32 counter rollover.
+// Per-request anti-replay, called only after GCM auth, so an unauthenticated
+// frame cannot advance it. The link is ordered, so strictly-newer counters
+// suffice (no sliding window); the signed comparison wraps safely at rollover.
 static int replay_check(tesla_session_t *s, uint32_t counter)
 {
     if (s->replay_init && (int32_t)(counter - s->replay_high) <= 0) {
@@ -541,13 +536,12 @@ int tesla_session_process_response(tesla_session_t *s,
         return -1;
     }
     if (fault_out != NULL) {
-        // Surface the actual fault code, not just a boolean (review N1/N2).
+        // Surface the actual fault code.
         *fault_out = m.signedMessageStatus.signed_message_fault;
     }
 
-    // A response that carries proactive session info is a desync hint, not an
-    // application reply; the caller should re-sync and retry (Phase 6 wires
-    // the full recovery; Phase 2 surfaces it as a distinct return).
+    // A response carrying proactive session info is a desync hint, not an
+    // application reply; the caller should re-sync and retry.
     if (m.which_payload == UniversalMessage_RoutableMessage_session_info_tag) {
         return -2;
     }
@@ -589,11 +583,9 @@ int tesla_session_process_response(tesla_session_t *s,
         if (m.payload.protobuf_message_as_bytes.size > sizeof(plain)) {
             return -1;
         }
-        // Authenticate FIRST: the GCM tag binds nonce/tag/ciphertext and the
-        // AAD (which covers the counter via response metadata). Only a
-        // successfully authenticated response may advance the anti-replay
-        // window — a forged frame fails here and the window stays untouched
-        // (review C1). A victim is never returned on auth failure.
+        // Authenticate FIRST: only a successfully authenticated response may
+        // advance the anti-replay window — a forged frame fails here and the
+        // window stays untouched. Never return a plaintext victim on failure.
         rc = tesla_gcm_decrypt(s->shared_key,
                                m.payload.protobuf_message_as_bytes.bytes,
                                m.payload.protobuf_message_as_bytes.size,
@@ -604,17 +596,16 @@ int tesla_session_process_response(tesla_session_t *s,
         plain_len = m.payload.protobuf_message_as_bytes.size;
 
         // Anti-replay AFTER authentication: only reject non-newer counters
-        // (link is ordered; no out-of-order window needed). An unauthenticated
-        // frame never reaches here, so it cannot poison the window (C1).
+        // (link is ordered; no sliding window needed). An unauthenticated
+        // frame never reaches here, so it cannot poison the window.
         if (replay_check(s, gcm->counter) != 0) {
             return -3;
         }
     } else {
-        // Older firmware (pre-2024.38): response payload is plaintext — NO GCM
-        // tag, NO request-hash binding, and NO anti-replay here. Unauthenticated:
-        // a rogue link peer could inject arbitrary bytes. Acceptable only for
-        // this read-only status poll against 2024.38+ firmware; revisit if a
-        // pre-2024.38 car must be supported for anything but status.
+        // Pre-2024.38 firmware: plaintext payload, no GCM tag / request-hash
+        // binding / anti-replay here — unauthenticated, a rogue peer could
+        // inject bytes. Acceptable only for this read-only status poll; revisit
+        // if pre-2024.38 cars must get more than status.
         plain_len = m.payload.protobuf_message_as_bytes.size;
         if (plain_len > sizeof(plain)) {
             return -1;

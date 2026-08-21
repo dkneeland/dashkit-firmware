@@ -40,9 +40,8 @@ static uint8_t s_last_frame[7] = { 0x01, TESLA_LINK_NEVER_ENROLLED, 0xFF, 0xFF, 
 // ---------------------------------------------------------------------------
 // Command writes (CADA0201): [opcode][value_lo][value_hi?]
 // ---------------------------------------------------------------------------
-// The app-channel command is the ONLY trigger for Tesla enrollment. It writes
-// on the dedicated service characteristic, so it is fully separate from the CAN
-// control characteristic (CADA0004) and needs no help from vehicle_control.
+// The app-channel command is the only enrollment trigger; it writes on this
+// dedicated characteristic, separate from CAN control (CADA0004).
 static int app_cmd_access(uint16_t conn_handle, uint16_t attr_handle,
                           struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
@@ -93,9 +92,8 @@ static int app_cmd_access(uint16_t conn_handle, uint16_t attr_handle,
     return 0;
 }
 
-// Status characteristic: notify-on-change + read of the last frame, so a phone
-// can learn current state immediately on subscribe (the pairing/client tasks
-// push updates on change, but a fresh subscriber shouldn't wait for the next one).
+// Status characteristic: notify on change + serve the last frame so a fresh
+// subscriber gets current state immediately.
 static int app_status_access(uint16_t conn_handle, uint16_t attr_handle,
                              struct ble_gatt_access_ctxt *ctxt, void *arg)
 {

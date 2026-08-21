@@ -102,9 +102,8 @@ int tesla_derive_shared_key(const uint8_t priv[TESLA_PRIVKEY_LEN],
         goto out;
     }
 
-    // read_binary only decodes the point; reject points that do not satisfy
-    // the curve equation (invalid-curve hardening, mirroring the reference
-    // implementation which rejects off-curve peers).
+    // read_binary only decodes the point; reject points that don't satisfy the
+    // curve equation (invalid-curve hardening, mirroring the reference).
     rc = mbedtls_ecp_check_pubkey(&grp, &peer);
     if (rc != 0) {
         goto out;
@@ -201,7 +200,7 @@ int tesla_gcm_decrypt(const uint8_t k[TESLA_SHARED_KEY_LEN],
 }
 
 // ============================================================================
-// Phase 3: NIST-P256 keypair generation for present-key enrollment.
+// NIST-P256 keypair generation (present-key enrollment).
 // ============================================================================
 
 int tesla_keypair_generate(tesla_keypair_t *key, tesla_rng_fn f_rng, void *p_rng)

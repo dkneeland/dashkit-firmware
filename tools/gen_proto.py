@@ -71,10 +71,10 @@ def protoc_cmd():
 
 
 def main():
-    # Phase 2 generates the VCSEC + handshake message set only. The Infotainment
-    # protos (car_server.proto, vehicle.proto, managed_charging.proto) arrive in
-    # Phase 4 together with a vendored google/protobuf/timestamp binding; they
-    # are excluded here so this commit builds cleanly without that dependency.
+    # Generate the VCSEC + handshake message set only. The Infotainment protos
+    # (car_server.proto, vehicle.proto, managed_charging.proto) need a vendored
+    # google/protobuf/timestamp binding, so they are excluded here and the build
+    # stays clean without that dependency.
     generate = [
         "errors.proto",
         "keys.proto",

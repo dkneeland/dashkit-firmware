@@ -159,7 +159,7 @@ esp_err_t tesla_storage_save_car_addr(const tesla_car_addr_t *addr)
     return err;
 }
 
-// Remove all Tesla state. Phase 4 app-channel "reset Tesla key" command.
+// Remove all Tesla state. App-channel "reset Tesla key" command.
 esp_err_t tesla_storage_erase_all(void)
 {
     nvs_handle_t h;

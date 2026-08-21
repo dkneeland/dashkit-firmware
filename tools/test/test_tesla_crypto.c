@@ -1,10 +1,9 @@
 // Host round-trip unit test for the Tesla crypto/session layers
 // (components/tesla-protocol/crypto.c and session.c).
 //
-// Compiled with plain gcc against a host mbedTLS 3.6.2 build; the mbedTLS
-// 3.x API is the very thing Phase 0 de-risks, so the test runs against the
-// same major.minor as the ESP-IDF 5.4.1 vendored copy. See
-// run_tesla_crypto_test.sh for the one-shot build.
+// Compiled with plain gcc against a host mbedTLS 3.6.2 build; the test runs
+// against the same major.minor as the ESP-IDF 5.4.1 vendored copy to validate
+// the mbedTLS 3.x API port. See run_tesla_crypto_test.sh for the one-shot build.
 //
 //   gcc -std=c99 -Wall -Wextra -I components/tesla-protocol
 //       -I <mbedtls>/include

@@ -1,5 +1,5 @@
-# Tesla BLE vehicle-command client (Phase 2: central connect + VCSEC handshake
-# + GET_STATUS). Gated by DASHKIT_TESLA_BLE so a feature-off build drops the
+# Tesla BLE vehicle-command client (central connect + VCSEC handshake +
+# GET_STATUS). Gated by DASHKIT_TESLA_BLE so a feature-off build drops the
 # tesla/ modules, the observer *and* central roles, and the storage dependency.
 # tesla_ble_adapter depends on NimBLE's scan/central API; tesla_advert_name is
 # pure C (used by the host test suite); tesla_ble_storage uses NVS;

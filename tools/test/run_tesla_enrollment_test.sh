@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Build (or reuse) a host mbedTLS 3.6.2 prefix and run the Tesla Phase 3
-# enrollment test (tools/test/test_tesla_enrollment.c): P-256 keypair
-# generation and the ToVCSECMessage present-key enrollment builder round-trip,
-# against the committed nanopb bindings + crypto/protobuf_build layers.
+# Build (or reuse) a host mbedTLS 3.6.2 prefix and run the Tesla enrollment
+# test (tools/test/test_tesla_enrollment.c): P-256 keypair generation and the
+# ToVCSECMessage present-key enrollment builder round-trip, against the
+# committed nanopb bindings + crypto/protobuf_build layers.
 #
 # Reuses the mbedTLS prefix built by run_tesla_crypto_test.sh so running all
 # four test scripts never rebuilds mbedTLS twice.

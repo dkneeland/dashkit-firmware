@@ -1,9 +1,9 @@
-// Host round-trip test for the Phase 2 Tesla BLE protocol layer
+// Host round-trip test for the Tesla BLE protocol layer
 // (components/tesla-protocol/{crypto,session,protobuf_build}.c over the
 // committed nanopb bindings in generated/).
 //
-// This builds the whole protocol stack off the car and exercises the exact
-// in-car milestone the plan defers to after Phase 3 enrollment:
+// This builds the whole protocol stack off the car and exercises the real
+// in-car flow after enrollment:
 //   handshake -> derive K -> sign+encrypt a VCSEC GET_STATUS -> simulate the
 //   vehicle (using protocol.md's published vehicle private key) decrypting +
 //   responding -> client decrypts + validates + runs the VCSEC terminal
@@ -542,7 +542,7 @@ static void test_handshake_negative(void)
 
     // A KEY_NOT_ON_WHITELIST SessionInfo is still a valid-HMAC session, but it
     // must be surfaced as not-whitelisted so the client fires the enroll
-    // canary instead of a misleading "handshake complete" (review S5).
+    // canary instead of a misleading "handshake complete".
     {
         uint8_t resp2[256]; size_t rl2 = 0;
         tesla_session_t s2;
@@ -708,7 +708,7 @@ static void test_protobuf_primitives(void)
               VCSEC_InformationRequestType_INFORMATION_REQUEST_TYPE_GET_STATUS,
           "status is InformationRequest/GET_STATUS");
 
-    // Whitelist builder (Phase 3): role + key + form factor must survive.
+    // Whitelist builder: role + key + form factor must survive.
     uint8_t pk[65];
     unhex(CLIENT_PUB_HEX, pk, sizeof(pk));
     CHECK(tesla_pb_encode_vcsec_whitelist(pk, Keys_Role_ROLE_CHARGING_MANAGER,
@@ -734,7 +734,7 @@ static void test_protobuf_primitives(void)
 
 int main(void)
 {
-    printf("Tesla BLE Phase 2 protocol round-trip tests\n");
+    printf("Tesla BLE session/protocol round-trip tests\n");
     printf("-------------------------------------------\n");
 
     unhex(CLIENT_PRIV_HEX, g_c_priv, sizeof(g_c_priv));

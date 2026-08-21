@@ -22,7 +22,7 @@
 
 static const char *TAG = "tesla_client";
 
-// Poll cadence + connection budget (plan §2/§6).
+// Poll cadence + connection budget.
 #define POLL_INTERVAL_S      10
 #define POLLS_PER_CONN       5
 #define RESPONSE_TIMEOUT_MS  3000
@@ -41,11 +41,9 @@ static const char *TAG = "tesla_client";
 #define RECONNECT_RETRY_MS   10000
 #define STATUS_DEBOUNCE_MS   300000
 
-// Max BLE frame (framing + payload). 320 B is fine for Phase 2/3 VCSEC
-// (GET_STATUS responses are small), but Phase 4 Infotainment responses
-// (getVehicleData etc.) can exceed this — the reference transports
-// up-to-1024-byte BLE messages. Grow RX_FRAME_MAX (and the transport's
-// payload max) when the infotainment domain lands.
+// Max BLE frame (framing + payload). 320 B fits VCSEC GET_STATUS responses;
+// grow RX_FRAME_MAX (and the transport's payload max) if larger Infotainment
+// responses are ever needed (the reference transports up to 1024-byte BLE).
 #define RX_FRAME_MAX 320
 typedef struct {
     uint16_t len;
@@ -91,8 +89,8 @@ static void client_rx_cb(const uint8_t *data, size_t len, void *arg)
 static esp_err_t recv_for_route(uint8_t *buf, size_t cap, size_t *out_len,
                                 uint32_t timeout_ms, const uint8_t routing[16])
 {
-    // Tick counter wraps (uint32): always subtract to compute what's left,
-    // never compare absolute tick values directly (review N3).
+    // Tick counter wraps (uint32): always subtract to compute what's left;
+    // never compare absolute tick values directly.
     uint32_t start = xTaskGetTickCount();
     uint32_t total = pdMS_TO_TICKS(timeout_ms);
 
@@ -248,15 +246,11 @@ static esp_err_t refresh_status(tesla_session_t *sess, const char *vin,
         return ESP_FAIL;
     }
 
-    // VCSEC may emit up to three responses to one request (e.g. a WAIT/busy
-    // commandStatus before the vehicleStatus result). Feed each through the
-    // terminal classifier until we hit STATUS / terminal DONE / ERROR.
-    //
-    // Caveat: if the vehicle echoes the request's counter in every response
-    // to that request, responses 2/3 carry the same counter and the anti-replay
-    // check rejects them as duplicates — the loop then degrades to a single
-    // response, which is perfectly fine for GET_STATUS. Confirm the counter
-    // model against a real car in Phase 3.
+    // VCSEC may answer one request with up to three responses (a WAIT/busy
+    // commandStatus before the result); feed each through the terminal
+    // classifier. If the vehicle echoes the request counter on every response,
+    // anti-replay drops 2/3 as duplicates and this degrades to one response —
+    // fine for GET_STATUS; confirm the counter model against a real car.
     bool got_status = false, errored = false;
     for (int i = 0; i < 3 && !got_status && !errored; i++) {
         uint8_t resp[RX_FRAME_MAX], plain[TESLA_PB_PAYLOAD_MAX];
@@ -279,8 +273,8 @@ static esp_err_t refresh_status(tesla_session_t *sess, const char *vin,
             break;
         }
         if (fault != 0) {
-            // Protocol-layer error (review N2): surface it distinctly. VCSEC
-            // may still follow with a specific result, so keep collecting.
+            // Protocol-layer error: surface it distinctly. VCSEC may still
+            // follow with a specific result, so keep collecting.
             ESP_LOGW(TAG, "status response fault=%u; waiting for the specific result",
                      (unsigned)fault);
         }
@@ -297,7 +291,7 @@ static esp_err_t refresh_status(tesla_session_t *sess, const char *vin,
             got_status = true;
             ESP_LOGI(TAG, "status: presence=%s lock=%s sleep=%s",
                      presence_name(presence), lock_name(lock), sleep_name(sleep));
-            // Push to the phone app-channel (Phase 4).
+            // Push to the phone app-channel.
             report_app_link(TESLA_LINK_ENROLLED_CONNECTED, presence, lock, sleep);
             if (presence != *last_presence || lock != *last_lock || sleep != *last_sleep) {
                 ESP_LOGI(TAG, "status delta: presence %s->%s, lock %s->%s, sleep %s->%s",
@@ -343,10 +337,9 @@ static void drain_rxq(void)
     }
 }
 
-// Reference implementations (esphome-tesla-ble) debounce the "not connected" /
-// unknown state so a transient RF drop or brief reconnect gap doesn't flip the
-// phone's tile. Only report ENROLLED_NOT_CONNECTED once the link has been down
-// for STATUS_DEBOUNCE_MS since the last good poll; never before the first one.
+// Debounce "not connected": only report ENROLLED_NOT_CONNECTED once the link
+// has been down STATUS_DEBOUNCE_MS since the last good poll (matches
+// esphome-tesla-ble, so an RF blip doesn't flip the phone's tile).
 static void report_link_debounced(uint64_t *last_good_ms)
 {
     if (*last_good_ms != 0 &&
@@ -367,7 +360,7 @@ static void client_task(void *arg)
     while (true) {
         if (!load_config(&key, &addr, vin)) {
             last_good_ms = 0;
-            ESP_LOGI(TAG, "no enrolled Tesla key/link yet (pairing is Phase 3); waiting");
+            ESP_LOGI(TAG, "no enrolled Tesla key/link yet; waiting for pairing");
             vTaskDelay(pdMS_TO_TICKS(NO_KEY_DELAY_S * 1000));
             continue;
         }
@@ -424,18 +417,17 @@ static void client_task(void *arg)
                 // HMAC was valid (we have K), but the car reports this key is
                 // NOT on the whitelist — un-enrolled, so poll will fail.
                 ESP_LOGW(TAG, "handshake OK, but key NOT on whitelist "
-                              "(enroll via Phase 3 pairing)");
+                              "(enroll via pairing)");
                 goto link_down;
             }
             ESP_LOGI(TAG, "VCSEC handshake complete (counter=%u)",
                      (unsigned)sess.counter);
         }
 
-        // Persistent poll over the open link — do NOT idle-disconnect per cycle
-        // (matches esphome-tesla-ble). VCSEC polling is low-power and does not
-        // wake the car. Abort on the first refresh failure and reconnect at the
-        // top; the debounced report keeps the app "connected" across transient
-        // RF drops instead of flapping on every cycle.
+        // Persistent poll over the open link (matches esphome-tesla-ble) —
+        // VCSEC polling is low-power and does not wake the car. Abort on the
+        // first refresh failure and reconnect; the debounced report keeps the
+        // app "connected" across transient RF drops.
         {
             int last_presence = -1, last_lock = -1, last_sleep = -1;
             for (;;) {

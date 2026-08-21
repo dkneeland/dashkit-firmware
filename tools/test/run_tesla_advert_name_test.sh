@@ -6,11 +6,19 @@
 # Reuses the exact mbedTLS prefix that run_tesla_crypto_test.sh builds, so
 # running both never rebuilds mbedTLS twice. The matcher is pure C, but the
 # test derives a legacy ad name from a VIN using mbedTLS SHA-1 (the same hash
-# family the firmware uses to check VIN identity from Phase 2 on).
+# family the firmware uses to check VIN identity).
 #
 # Requires: gcc, make, curl.
 # Optional: a VIN as argv to print the exact names your fake beacon must
 # broadcast (also validated against the matcher in-test).
+#
+# What it tests: Tesla advertisement-name matching (tesla_advert_name.c), which
+# must recognize BOTH on-air formats a car can broadcast:
+#   - legacy "S+8hex+role" (the real 18-char form)
+#   - modern "Tesla <last 6 VIN chars>" (with 4-6 char tail tolerance)
+# All 33 cases are kept: the matcher's string rules are subtle (prefix, length,
+# charset, suffix slicing) and regress silently, and are only cheaply verifiable
+# off-car.
 set -euo pipefail
 
 MBEDTLS_VERSION=3.6.2

@@ -1,4 +1,4 @@
-// Host unit test for the Phase 3 present-key enrollment pieces:
+// Host unit test for the present-key enrollment pieces:
 // keypair generation (crypto.c) and the ToVCSECMessage enrollment builder
 // (protobuf_build.c).
 //
@@ -167,7 +167,7 @@ static void test_enrollment(void)
 
 int main(void)
 {
-    printf("Tesla BLE Phase 3 enrollment tests (keygen + present-key message)\n");
+    printf("Tesla BLE enrollment tests (keygen + present-key message)\n");
     printf("------------------------------------------------------------------\n");
     test_keygen();
     test_enrollment();

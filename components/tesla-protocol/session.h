@@ -1,13 +1,7 @@
 // Tesla vehicle-command session layer: metadata TLV serialization, session-info
-// authentication, and request hashing, on top of crypto.h.
-//
-// Ported from the Apache-2.0 vehicle-command reference (internal/authentication
-// metadata.go / peer.go / signer.go), validated against the known-answer
-// vectors in Tesla's protocol.md.
-//
-// Counter/epoch state management, full signer state, and protobuf building
-// arrive in later phases of the integration plan; this file only contains the
-// pieces the Phase 0 crypto tests exercise.
+// authentication, and request hashing, on top of crypto.h. Ported from the
+// Apache-2.0 vehicle-command reference (internal/authentication metadata.go /
+// peer.go / signer.go), validated against Tesla's protocol.md test vectors.
 
 #pragma once
 
@@ -48,17 +42,13 @@
 // SessionInfo.epoch length.
 #define TESLA_EPOCH_LEN 16
 
-// Serialized-metadata bound. Worst realistic metadata (response metadata with a
-// full VIN and a 33-byte request hash) is ~80 bytes; 128 leaves headroom while
-// keeping the struct stack-allocable.
+// Serialized-metadata bound: worst realistic metadata is ~80 B; 128 leaves
+// headroom while keeping the struct stack-allocable.
 #define TESLA_METADATA_MAX 128
 
-// Tag-length-value metadata serializer. Tags must be added in strictly
-// ascending order. This is deliberately stricter than the reference
-// implementation, which permits duplicate tags: the serialization stays
-// injective (no two metadata sets collide), which the protocol relies on. A
-// value longer than 255 bytes is rejected because the TLV length field is a
-// single byte.
+// TLV serializer. Tags must be strictly ascending (stricter than the
+// reference, which allows duplicates) so serialization is injective — the
+// protocol relies on this; values >255 B are rejected (1-byte length field).
 typedef struct {
     uint8_t buf[TESLA_METADATA_MAX];
     size_t  len;
@@ -126,9 +116,8 @@ int tesla_request_hash(uint8_t sig_type, const uint8_t *tag, size_t tag_len,
                        bool truncate_to_17, uint8_t *out, size_t *out_len);
 
 // ============================================================================
-// Phase 2: session state, handshake, command signing, and VCSEC response
-// handling. Ported from the Apache-2.0 vehicle-command reference
-// (internal/authentication/signer.go + verifier.go, internal/dispatcher).
+// Session state, handshake, command signing, and VCSEC response handling.
+// Ported from the vehicle-command reference (signer.go + verifier.go).
 // ============================================================================
 
 // Local monotonic millisecond clock. The firmware passes a wrapper around
@@ -137,9 +126,8 @@ int tesla_request_hash(uint8_t sig_type, const uint8_t *tag, size_t tag_len,
 typedef uint64_t (*tesla_now_ms_fn)(void);
 
 // Authenticated session state for one vehicle domain. `counter` is the *next*
-// counter value to sign with (matching the reference: Encrypt increments then
-// uses). A session may be discarded and re-derived via the handshake at any
-// time; persisting it (Phase 3 storage) lets a later boot skip the handshake.
+// value to sign with (the reference increments then uses). The session can be
+// discarded and re-derived via the handshake at any time.
 typedef struct {
     uint8_t  domain;                       // TESLA_DOMAIN_*
     bool     valid;
@@ -152,25 +140,19 @@ typedef struct {
     uint8_t  vehicle_pubkey[TESLA_PUBKEY_LEN]; // peer identity (from SessionInfo)
     uint32_t handle;                       // from SessionInfo
     tesla_now_ms_fn now_ms;                // local clock source (may be NULL)
-    // Whether the enrolling SessionInfo reported this key as whitelisted.
-    // A valid-HMAC session can still be KEY_NOT_ON_WHITELIST (un-enrolled key);
-    // surfaced so the client can fire the proper canary instead of logging a
-    // misleading "handshake complete".
+    // Whether SessionInfo reported this key as whitelisted — a valid-HMAC
+    // session can still be KEY_NOT_ON_WHITELIST (un-enrolled key).
     bool     whitelisted;
-    // Response anti-replay (per request, matching the reference's per-request
-    // window): after GCM authentication, a response whose counter is not
-    // strictly ahead of the highest authenticated counter for this request is
-    // rejected as a replay. Reset when each command is built (in
-    // tesla_session_build_command). The BLE link is reliable and ordered, so
-    // no out-of-order window is needed (YAGNI).
+    // Per-request anti-replay: after GCM auth, reject a response whose counter
+    // is not strictly ahead of the highest authenticated one. Reset per
+    // command; the BLE link is ordered, so no sliding window is needed (YAGNI).
     uint32_t replay_high;                  // highest authenticated counter seen (current request)
     bool     replay_init;                  // false until first authenticated response
 } tesla_session_t;
 
-// "Expiration" applied to sent commands: how many vehicle-clock seconds a
-// signed command may remain valid. Matches the reference's 5 s default (the
-// vehicle rejects commands whose TTL exceeds its max, MESSAGEFAULT_ERROR_*);
-// the ~10 s value is the poll cadence, not the per-command TTL.
+// Sent-command TTL in vehicle-clock seconds. Matches the reference's 5 s
+// default (the vehicle rejects over-TTL commands); the ~10 s poll is cadence,
+// not TTL.
 #define TESLA_SESSION_VALIDITY_S 5
 
 void tesla_session_init(tesla_session_t *s, uint8_t domain, tesla_now_ms_fn now_ms);
@@ -240,9 +222,8 @@ typedef enum {
     TESLA_VCSEC_ERROR,        // terminal error (nominalError)
 } tesla_vcsec_phase_t;
 
-// Classify a single FromVCSECMessage per protocol.md §VCSEC application-layer
-// responses. VCSEC may emit up to three responses to one request; WAIT/ERROR
-// are non-terminal, a vehicleStatus is the STATUS answer, nominalError is a
-// terminal error, and everything else is terminal DONE. (Phase 2 GET_STATUS
-// scope only — the whitelist-pairing variant returns in Phase 3.)
+// Classify a single FromVCSECMessage (VCSEC may emit up to three responses to
+// one request): WAIT/ERROR are pending, vehicleStatus is STATUS, nominalError
+// is terminal ERROR, everything else is terminal DONE. Currently GET_STATUS-
+// only; the whitelist-pairing variant can extend it.
 tesla_vcsec_phase_t tesla_vcsec_ingest(const VCSEC_FromVCSECMessage *m);

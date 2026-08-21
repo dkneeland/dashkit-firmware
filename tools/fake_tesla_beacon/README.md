@@ -1,7 +1,7 @@
-# Fake Tesla beacon — Phase 1 scan verification helper
+# Fake Tesla beacon — advertisement-scan verification helper
 
 A standalone ESP-IDF project that broadcasts a Tesla-format advertisement name
-from a spare ESP32-S3 board. The Phase 1 firmware observes BLE advertisements
+from a spare ESP32-S3 board. The DashKit firmware observes BLE advertisements
 and logs the name + MAC of anything matching Tesla's two documented formats:
 
 - Legacy: `S` + first-8-hex of `SHA1(VIN)` + `C`/`R`/`D`/`P`
@@ -49,7 +49,7 @@ The beacon logs `advertising as "Tesla 789ABC"` and stays on forever.
 
 ## Verify the firmware sees it
 
-Flash the Phase 1 firmware on the DashKit board, then bring the beacon within
+Flash the DashKit firmware on the board, then bring the beacon within
 range. The DashKit serial log shows, once per discovered device:
 
 ```
