@@ -71,10 +71,11 @@ def protoc_cmd():
 
 
 def main():
-    # Generate the VCSEC + handshake message set only. The Infotainment protos
-    # (car_server.proto, vehicle.proto, managed_charging.proto) need a vendored
-    # google/protobuf/timestamp binding, so they are excluded here and the build
-    # stays clean without that dependency.
+    # Generate the VCSEC + handshake message set only. The Infotainment
+    # schemas (car_server.proto, vehicle.proto, managed_charging.proto,
+    # common.proto) are not vendored — nothing above imports them. Vendor them
+    # plus a google/protobuf/timestamp binding when that domain lands, and add
+    # them to this list.
     generate = [
         "errors.proto",
         "keys.proto",

@@ -45,9 +45,9 @@ esp_err_t tesla_storage_load_car_addr(tesla_car_addr_t *addr);
 esp_err_t tesla_storage_save_car_addr(const tesla_car_addr_t *addr);
 
 // Erase ALL Tesla state (keypair, pub, VIN, car address). Used by the app-channel
-// "reset Tesla key" command (TESLA_CMD_RESET / 0x02). After this,
-// the observer re-stages on the next car sighting and enrollment waits for the
-// app to start it again. Never erases the phone<->DashKit BLE bonds (that is
+// "reset Tesla key" command (TESLA_CMD_RESET / 0x02). After this the app
+// provisions the car again (TESLA_CMD_PROVISION / 0x04) before the next
+// enrollment. Never erases the phone<->DashKit BLE bonds (that is
 // ble_server_factory_reset's job).
 esp_err_t tesla_storage_erase_all(void);
 

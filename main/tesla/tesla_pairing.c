@@ -13,6 +13,7 @@
 #include "ble_appchan.h"
 #include "led.h"
 #include "protobuf_build.h"
+#include "session.h"
 #include "universal_message.pb.h"
 #include "vcsec.pb.h"
 
@@ -25,13 +26,6 @@
 #include <string.h>
 
 static const char *TAG = "tesla_pairing";
-
-// Auto-provision target: only enroll against OUR car, matched by its derived
-// legacy name ("S" + first 16 hex chars of SHA1(VIN) + role letter). This is a
-// placeholder VIN — drive enrollment from the app (tesla_pairing_configure)
-// for any other car.
-#define TESLA_TARGET_VIN  "5YJ3E1EB8TF024681"
-#define TESLA_TARGET_NAME "S1481f4f405d98dfeC"
 
 // Enrolled role: read + charge only, presented as an Android-style device.
 #define ENROLL_ROLE        Keys_Role_ROLE_CHARGING_MANAGER
@@ -48,14 +42,20 @@ static const char *TAG = "tesla_pairing";
 // How often the task re-checks the app 'start' latch once a car is staged.
 #define STAGE_POLL_MS       200
 
-#define RX_FRAME_MAX 320
-
 typedef struct {
     uint16_t len;
-    uint8_t  data[RX_FRAME_MAX];
+    uint8_t  data[TESLA_RX_FRAME_MAX];
 } pairing_frame_t;
 
 static QueueHandle_t s_rxq;
+
+// Keep the shared 600-byte frame bound out of the NimBLE host and pairing
+// task stacks. The callback and task use separate queue-item scratch objects;
+// the single work buffer is reused only between the sequential send/receive
+// phases of an enrollment or verification attempt.
+static pairing_frame_t s_pairing_cb_frame;
+static pairing_frame_t s_pairing_task_frame;
+static uint8_t s_pairing_work[TESLA_RX_FRAME_MAX];
 
 // App-triggered 'go' latch: enrollment runs only while this is set. Written by
 // the app-channel host task (start/cancel/reset), read/cleared by the pairing
@@ -73,29 +73,41 @@ static int hw_rng(void *ctx, uint8_t *buf, size_t len)
 static void pairing_rx_cb(const uint8_t *data, size_t len, void *arg)
 {
     (void)arg;
-    if (s_rxq == NULL || len == 0 || len > RX_FRAME_MAX) {
+    if (s_rxq == NULL || len == 0) {
+        ESP_LOGW(TAG, "pairing RX drop: queue unavailable or empty frame len=%u",
+                 (unsigned)len);
         return;
     }
-    pairing_frame_t f;
-    f.len = (uint16_t)len;
-    memcpy(f.data, data, len);
-    xQueueSend(s_rxq, &f, 0);
+    if (len > TESLA_RX_FRAME_MAX) {
+        ESP_LOGW(TAG, "pairing RX drop: frame too large len=%u max=%u",
+                 (unsigned)len, (unsigned)TESLA_RX_FRAME_MAX);
+        return;
+    }
+    ESP_LOGI(TAG, "pairing RX frame len=%u", (unsigned)len);
+    s_pairing_cb_frame.len = (uint16_t)len;
+    memcpy(s_pairing_cb_frame.data, data, len);
+    if (xQueueSend(s_rxq, &s_pairing_cb_frame, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "pairing RX drop: queue full depth=%u",
+                 (unsigned)uxQueueMessagesWaiting(s_rxq));
+    } else {
+        ESP_LOGD(TAG, "pairing RX queued depth=%u",
+                 (unsigned)uxQueueMessagesWaiting(s_rxq));
+    }
 }
 
 static esp_err_t pairing_recv(uint8_t *buf, size_t cap, size_t *out_len,
                               uint32_t timeout_ms)
 {
-    pairing_frame_t f;
-
-    if (xQueueReceive(s_rxq, &f, (TickType_t)pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+    if (xQueueReceive(s_rxq, &s_pairing_task_frame,
+                      (TickType_t)pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
-    if (f.len > cap) {
+    if (s_pairing_task_frame.len > cap) {
         return ESP_ERR_INVALID_SIZE;
     }
-    memcpy(buf, f.data, f.len);
+    memcpy(buf, s_pairing_task_frame.data, s_pairing_task_frame.len);
     if (out_len != NULL) {
-        *out_len = f.len;
+        *out_len = s_pairing_task_frame.len;
     }
     return ESP_OK;
 }
@@ -111,6 +123,10 @@ static int pairing_ingest(const uint8_t *frame, size_t len, uint32_t *info_out)
     const uint8_t *payload = frame;
     size_t plen = len;
 
+    if (info_out != NULL) {
+        *info_out = UINT32_MAX;
+    }
+
     // nanopb only writes a which_* selector when that member is on the wire;
     // zero the structs so a WAIT reply (commandStatus with no sub_status) is
     // read as "keep waiting" rather than as uninitialized stack garbage.
@@ -119,10 +135,21 @@ static int pairing_ingest(const uint8_t *frame, size_t len, uint32_t *info_out)
 
     // The car replies with a RoutableMessage whose protobuf_message_as_bytes
     // holds the VCSEC.FromVCSECMessage (plaintext — no session, no encryption).
-    if (tesla_pb_decode_routable(frame, len, &rm) == 0 &&
+    int routable_rc = tesla_pb_decode_routable(frame, len, &rm);
+    if (routable_rc == 0) {
+        ESP_LOGI(TAG, "pairing RoutableMessage decode=ok payload=%u",
+                 (unsigned)rm.which_payload);
+    } else {
+        ESP_LOGW(TAG, "pairing RoutableMessage decode=fail len=%u",
+                 (unsigned)len);
+    }
+
+    if (routable_rc == 0 &&
         rm.which_payload == (pb_size_t)UniversalMessage_RoutableMessage_protobuf_message_as_bytes_tag) {
         payload = rm.payload.protobuf_message_as_bytes.bytes;
         plen = rm.payload.protobuf_message_as_bytes.size;
+        ESP_LOGI(TAG, "pairing RoutableMessage payload=protobuf len=%u",
+                 (unsigned)plen);
     } else if (rm.has_signedMessageStatus &&
                rm.signedMessageStatus.signed_message_fault !=
                    UniversalMessage_MessageFault_E_MESSAGEFAULT_ERROR_NONE) {
@@ -131,33 +158,47 @@ static int pairing_ingest(const uint8_t *frame, size_t len, uint32_t *info_out)
         ESP_LOGW(TAG, "enrollment rejected at protocol layer (signed_message_fault=%d)",
                  (int)rm.signedMessageStatus.signed_message_fault);
         return -1;
+    } else if (routable_rc == 0) {
+        ESP_LOGI(TAG, "pairing RoutableMessage payload=non-protobuf selector=%u",
+                 (unsigned)rm.which_payload);
     }
 
-    if (tesla_pb_decode_vcsec_from(payload, plen, &from) != 0) {
+    int vcsec_rc = tesla_pb_decode_vcsec_from(payload, plen, &from);
+    if (vcsec_rc != 0) {
+        ESP_LOGW(TAG, "pairing FromVCSEC decode=fail len=%u", (unsigned)plen);
+        // Dump first 48 bytes for diagnosis — helps identify whether the frame
+        // is a RoutableMessage the car wrapped differently, or an unknown type.
+        if (plen >= 2) {
+            char hex[97];
+            size_t n = plen < 48 ? plen : 48;
+            for (size_t i = 0; i < n; i++) {
+                snprintf(hex + i * 2, 3, "%02x", payload[i]);
+            }
+            hex[n * 2] = '\0';
+            ESP_LOGW(TAG, "pairing frame hex: %s", hex);
+        }
         return 0;
     }
-    if (from.which_sub_message != (pb_size_t)VCSEC_FromVCSECMessage_commandStatus_tag) {
-        return 0;   // vehicleStatus / empty — not the whitelist result yet
+    ESP_LOGI(TAG, "pairing FromVCSEC decode=ok submessage=%u",
+             (unsigned)from.which_sub_message);
+    uint32_t whitelist_info = UINT32_MAX;
+    tesla_whitelist_phase_t phase = tesla_vcsec_whitelist_ingest(&from,
+                                                                  &whitelist_info);
+    if (info_out != NULL && whitelist_info != UINT32_MAX) {
+        *info_out = whitelist_info;
     }
-    const VCSEC_CommandStatus *cs = &from.sub_message.commandStatus;
-    if (cs->which_sub_message != (pb_size_t)VCSEC_CommandStatus_whitelistOperationStatus_tag) {
-        return 0;   // OPERATIONSTATUS_WAIT (awaiting tap) — keep waiting
-    }
-    const VCSEC_WhitelistOperation_status *ws = &cs->sub_message.whitelistOperationStatus;
-    if (ws->whitelistOperationInformation ==
-            VCSEC_WhitelistOperation_information_E_WHITELISTOPERATION_INFORMATION_NONE) {
+    ESP_LOGI(TAG, "pairing whitelist classifier phase=%u info=%lu",
+             (unsigned)phase, (unsigned long)whitelist_info);
+    if (phase == TESLA_WHITELIST_SUCCESS) {
+        ESP_LOGI(TAG, "pairing whitelist result=success");
         return 1;
     }
-    if (ws->whitelistOperationInformation ==
-        VCSEC_WhitelistOperation_information_E_WHITELISTOPERATION_INFORMATION_ATTEMPTING_TO_ADD_KEY_THAT_IS_ALREADY_ON_THE_WHITELIST) {
-        // A prior attempt enrolled this same key but we lost the confirm
-        // response; the key is already on the car, so this is success.
-        return 1;
+    if (phase == TESLA_WHITELIST_ERROR) {
+        ESP_LOGW(TAG, "pairing whitelist result=error info=%lu",
+                 (unsigned long)whitelist_info);
+        return -1;
     }
-    if (info_out != NULL) {
-        *info_out = (uint32_t)ws->whitelistOperationInformation;
-    }
-    return -1;
+    return 0;
 }
 
 // Enroll `key` (already generated) on the car at `addr`. Returns ESP_OK only
@@ -172,10 +213,10 @@ static esp_err_t tesla_pairing_enroll(const tesla_keypair_t *key,
         return ESP_ERR_INVALID_ARG;
     }
 
-    uint8_t msg[320];
+    uint8_t *msg = s_pairing_work;
     size_t msg_len = 0;
     if (tesla_pb_build_enrollment(key, ENROLL_ROLE, ENROLL_FORM_FACTOR,
-                                  msg, sizeof(msg), &msg_len) != 0) {
+                                  msg, TESLA_RX_FRAME_MAX, &msg_len) != 0) {
         ESP_LOGE(TAG, "failed to build enrollment message");
         return ESP_FAIL;
     }
@@ -218,21 +259,23 @@ static esp_err_t tesla_pairing_enroll(const tesla_keypair_t *key,
             res = ESP_ERR_INVALID_STATE;
             break;
         }
-        uint8_t frame[RX_FRAME_MAX];
         size_t flen = 0;
-        if (pairing_recv(frame, sizeof(frame), &flen, RESPONSE_TIMEOUT_MS) != ESP_OK) {
-            // Keep the link alive while the car silently awaits the tap: a GATT
-            // read every ~4 s generates ATT traffic that resets the connection
-            // supervision timer, so a quiet-but-awake car can't drop the link in
-            // the middle of the tap window (established on-car: reason 0x208).
+        if (pairing_recv(s_pairing_work, TESLA_RX_FRAME_MAX, &flen,
+                         RESPONSE_TIMEOUT_MS) != ESP_OK) {
+            // Link-only ATT touch every ~4 s: resets supervision so a
+            // quiet-but-awake car can't drop mid-window (on-car: reason
+            // 0x208), without sending VCSEC traffic that could disturb the
+            // armed whitelist operation. See tesla_ble_keepalive().
             uint32_t now = xTaskGetTickCount();
             if (now - last_ka >= pdMS_TO_TICKS(4000)) {
                 last_ka = now;
+                ESP_LOGI(TAG, "tap window: no response in %us, sending keepalive read",
+                         (unsigned)(now - start) / 1000);
                 tesla_ble_keepalive();
             }
             continue;   // still waiting for the owner's tap
         }
-        int r = pairing_ingest(frame, flen, &info);
+        int r = pairing_ingest(s_pairing_work, flen, &info);
         if (r == 1) {
             res = ESP_OK;
             break;
@@ -243,7 +286,13 @@ static esp_err_t tesla_pairing_enroll(const tesla_keypair_t *key,
             res = ESP_ERR_INVALID_STATE;
             break;
         }
-        ESP_LOGD(TAG, "car awaiting card tap (OPERATIONSTATUS_WAIT)");
+        // Car responded (WAIT / status) — re-report PAIRING_WINDOW with the
+        // "car ready" flag (flags bit0) so the app can tell the user the car
+        // is armed and ready for the keycard tap. ble_appchan_report_status
+        // suppresses identical frames, so this only fires once per state change.
+        ESP_LOGI(TAG, "car responded (WAIT/status) — signaling app: car ready for tap");
+        ble_appchan_report_status(TESLA_LINK_PAIRING_WINDOW, 0xFF, 0xFF, 0xFF,
+                                  0x01, TESLA_FAULT_NONE);
     }
 
     tesla_ble_disconnect();
@@ -288,7 +337,10 @@ esp_err_t tesla_pairing_configure(const char *vin, const tesla_car_addr_t *addr)
 
 // App-triggered-only start. Requires a staged car; refuses while a key is
 // already enrolled. The pairing task picks s_app_allowed up on its next loop
-// iteration.
+// iteration. Reports the interim CONNECTING state immediately so the app
+// leaves "staged" the moment the user taps Connect (the car only arms its
+// tap window after the DashKit has connected + written the enrollment
+// request, which can take a few seconds).
 esp_err_t tesla_pairing_start(void)
 {
     if (tesla_storage_has_key()) {
@@ -300,6 +352,8 @@ esp_err_t tesla_pairing_start(void)
         return ESP_ERR_INVALID_STATE;
     }
     s_app_allowed = true;
+    ble_appchan_report_status(TESLA_LINK_CONNECTING, 0xFF, 0xFF, 0xFF, 0,
+                              TESLA_FAULT_NONE);
     ESP_LOGI(TAG, "app start: enrollment armed for VIN %s", s_vin);
     return ESP_OK;
 }
@@ -323,40 +377,113 @@ esp_err_t tesla_pairing_reset(void)
     s_app_allowed = false;
     s_configured = false;
     tesla_ble_disconnect();
-    ESP_LOGW(TAG, "app reset: Tesla key erased (re-stage + app re-trigger next)");
+    ESP_LOGW(TAG, "app reset: Tesla key erased (app re-provisions via 0x04)");
     (void)err;
     return ESP_OK;
 }
 
-bool tesla_pairing_is_target_vehicle(const char *name, size_t name_len)
+// If the tap window expires without a terminal whitelist response, the owner
+// may still have tapped + confirmed (the car accepted the key but the
+// confirmation frame was lost / misrouted). Rather than guessed failure,
+// reconnect and run the VCSEC handshake: a whitelisted session proves the key
+// was added. On success the keypair, VIN, and address are persisted (key last,
+// so the key blob remains the "enrollment complete" flag).
+static esp_err_t tesla_pairing_verify_enrolled(const tesla_keypair_t *key,
+                                               const char *vin,
+                                               const tesla_car_addr_t *addr)
 {
-    const size_t want = strlen(TESLA_TARGET_NAME);
-    return name != NULL && name_len == want &&
-           memcmp(name, TESLA_TARGET_NAME, want) == 0;
-}
-
-// Observer → pairing handoff: the observer only STAGES the target car (never
-// starts enrollment). Runs on the NimBLE host task but writes only this
-// one-shot staging bool, so the cross-task write to s_configured is benign.
-// The pairing task waits for tesla_pairing_start() (app 0x01).
-esp_err_t tesla_pairing_observe_vehicle(const char *name, size_t name_len,
-                                        const tesla_car_addr_t *addr)
-{
-    if (name == NULL || addr == NULL) {
+    if (key == NULL || vin == NULL || strlen(vin) != 17 || addr == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (tesla_storage_has_key()) {
-        return ESP_OK;            // already enrolled; client owns the link
+
+    tesla_ble_set_rx_cb(pairing_rx_cb, NULL);
+    // Drain stale frames (a late reply from the dead tap loop must not answer
+    // the fresh handshake).
+    while (s_rxq != NULL && xQueueReceive(s_rxq, &s_pairing_task_frame, 0) == pdTRUE) {
     }
-    if (s_configured) {
-        return ESP_OK;            // already provisioned this boot
+
+    if (tesla_ble_connect(addr, CONNECT_TIMEOUT_MS) != ESP_OK) {
+        ESP_LOGW(TAG, "verify: connect failed");
+        tesla_ble_disconnect();
+        return ESP_ERR_TIMEOUT;
     }
-    if (!tesla_pairing_is_target_vehicle(name, name_len)) {
-        return ESP_ERR_NOT_FOUND; // not our target car
+
+    uint8_t routing[16], challenge[16], req[400];
+    uint8_t *resp = s_pairing_work;
+    size_t req_len = 0, resp_len = 0;
+    esp_fill_random(routing, sizeof(routing));
+    esp_fill_random(challenge, sizeof(challenge));
+    if (tesla_build_handshake_request(TESLA_DOMAIN_VEHICLE_SECURITY, key->pub,
+                                      routing, challenge,
+                                      req, sizeof(req), &req_len) != 0) {
+        ESP_LOGE(TAG, "verify: failed to build handshake request");
+        tesla_ble_disconnect();
+        return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "observer: target vehicle in range; staging VIN %s "
-                  "(awaiting app start)", TESLA_TARGET_VIN);
-    return tesla_pairing_configure(TESLA_TARGET_VIN, addr);
+    if (tesla_ble_send(req, req_len) != ESP_OK) {
+        ESP_LOGW(TAG, "verify: handshake send failed");
+        tesla_ble_disconnect();
+        return ESP_FAIL;
+    }
+
+    // Wait for the handshake response matching OUR routing address; drop any
+    // other frame that races in from the previous session.
+    esp_err_t recv_err = ESP_ERR_TIMEOUT;
+    uint32_t start = xTaskGetTickCount();
+    while (recv_err != ESP_OK &&
+           (uint32_t)(xTaskGetTickCount() - start) < pdMS_TO_TICKS(RESPONSE_TIMEOUT_MS)) {
+        if (xQueueReceive(s_rxq, &s_pairing_task_frame,
+                          pdMS_TO_TICKS(RESPONSE_TIMEOUT_MS)) != pdTRUE) {
+            break;
+        }
+        UniversalMessage_RoutableMessage m;
+        memset(&m, 0, sizeof(m));
+        if (tesla_pb_decode_routable(s_pairing_task_frame.data,
+                                     s_pairing_task_frame.len, &m) != 0) {
+            continue;
+        }
+        if (m.has_to_destination &&
+            m.to_destination.which_sub_destination ==
+                UniversalMessage_Destination_routing_address_tag &&
+            m.to_destination.sub_destination.routing_address.size == 16 &&
+            memcmp(m.to_destination.sub_destination.routing_address.bytes,
+                   routing, 16) == 0) {
+            resp_len = s_pairing_task_frame.len;
+            memcpy(resp, s_pairing_task_frame.data, s_pairing_task_frame.len);
+            recv_err = ESP_OK;
+        }
+        // Otherwise: not our response, keep waiting.
+    }
+    if (recv_err != ESP_OK) {
+        ESP_LOGW(TAG, "verify: no handshake response (car asleep?)");
+        tesla_ble_disconnect();
+        return ESP_ERR_TIMEOUT;
+    }
+
+    tesla_session_t sess;
+    tesla_session_init(&sess, TESLA_DOMAIN_VEHICLE_SECURITY, NULL);
+    if (tesla_session_handshake(&sess, key, (const uint8_t *)vin, strlen(vin),
+                                challenge, resp, resp_len,
+                                hw_rng, NULL) != 0) {
+        ESP_LOGW(TAG, "verify: handshake rejected");
+        tesla_ble_disconnect();
+        return ESP_ERR_INVALID_STATE;
+    }
+    tesla_ble_disconnect();
+    if (!sess.whitelisted) {
+        ESP_LOGW(TAG, "verify: handshake OK but key NOT on whitelist");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (tesla_storage_save_vin(vin) != ESP_OK ||
+        tesla_storage_save_car_addr(addr) != ESP_OK ||
+        tesla_storage_save_key(key) != ESP_OK) {
+        ESP_LOGE(TAG, "verify: enrollment confirmed but persistence failed");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "verify: key confirmed on whitelist; persisted for reboot");
+    led_set_color(LED_COLOR_GREEN);
+    return ESP_OK;
 }
 
 // Map an enrollment failure to the app-channel fault-detail byte.
@@ -380,7 +507,7 @@ static void pairing_task(void *arg)
             continue;
         }
 
-        // No key yet: stage a known car (NVS resume or observer sighting) but
+        // No key yet: stage a known car (NVS resume or app provisioning) but
         // never begin on our own — the LEDs aren't a visible prompt.
         if (!s_configured) {
             if (tesla_storage_load_vin(s_vin, sizeof(s_vin)) == ESP_OK &&
@@ -434,6 +561,22 @@ static void pairing_task(void *arg)
                 ESP_LOGI(TAG, "enrollment complete; client poll loop takes over");
                 enrolled = true;
                 break;
+            }
+
+            // No terminal frame, but the key may still be enrolled (the
+            // confirm frame was lost) — verify by handshake instead of
+            // guessing failure. See tesla_pairing_verify_enrolled().
+            if (e == ESP_ERR_TIMEOUT && s_app_allowed) {
+                ESP_LOGW(TAG, "tap window expired; verifying enrollment with a handshake");
+                if (tesla_pairing_verify_enrolled(&key, s_vin, &s_car_addr) == ESP_OK) {
+                    ESP_LOGI(TAG, "enrollment confirmed via handshake verification");
+                    enrolled = true;
+                    break;
+                }
+                // Verification failed (car asleep/rejected): retreat to the
+                // interim state while we back off and try again.
+                ble_appchan_report_status(TESLA_LINK_CONNECTING, 0xFF, 0xFF, 0xFF,
+                                          0, TESLA_FAULT_NONE);
             }
             ESP_LOGW(TAG, "enrollment attempt %d/%d failed (%s); retrying in %d s",
                      attempt + 1, MAX_ATTEMPTS, esp_err_to_name(e), RETRY_DELAY_S);

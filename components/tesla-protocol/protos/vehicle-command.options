@@ -42,7 +42,7 @@ Signatures.SessionInfo.epoch                          max_size:16 fixed_length:t
 
 # ---- vcsec.proto ----
 VCSEC.PublicKey.PublicKeyRaw                          max_size:65
-VCSEC.KeyIdentifier.publicKeySHA1                     max_size:20 fixed_length:true
+VCSEC.KeyIdentifier.publicKeySHA1                     max_size:20
 VCSEC.WhitelistInfo.whitelistEntries                  max_count:16
 VCSEC.SignedMessage.protobufMessageAsBytes            max_size:256
 VCSEC.InformationRequest.publicKey                    max_size:65

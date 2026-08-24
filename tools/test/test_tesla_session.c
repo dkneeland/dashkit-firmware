@@ -505,6 +505,201 @@ static void test_vcsec_state_machine(void)
           "empty -> DONE (success)");
 }
 
+static void test_vcsec_whitelist_classifier(void)
+{
+    VCSEC_FromVCSECMessage m;
+    uint32_t info;
+
+    memset(&m, 0, sizeof(m));
+    CHECK(tesla_vcsec_whitelist_ingest(&m, &info) == TESLA_WHITELIST_PENDING,
+          "whitelist empty -> PENDING");
+
+    memset(&m, 0, sizeof(m));
+    m.which_sub_message = (pb_size_t)VCSEC_FromVCSECMessage_vehicleStatus_tag;
+    CHECK(tesla_vcsec_whitelist_ingest(&m, &info) == TESLA_WHITELIST_PENDING,
+          "whitelist vehicleStatus -> PENDING");
+
+    memset(&m, 0, sizeof(m));
+    m.which_sub_message = (pb_size_t)VCSEC_FromVCSECMessage_commandStatus_tag;
+    m.sub_message.commandStatus.operationStatus =
+        VCSEC_OperationStatus_E_OPERATIONSTATUS_WAIT;
+    CHECK(tesla_vcsec_whitelist_ingest(&m, &info) == TESLA_WHITELIST_PENDING,
+          "whitelist parent WAIT/no submessage -> PENDING");
+
+    memset(&m, 0, sizeof(m));
+    m.which_sub_message = (pb_size_t)VCSEC_FromVCSECMessage_commandStatus_tag;
+    m.sub_message.commandStatus.operationStatus =
+        VCSEC_OperationStatus_E_OPERATIONSTATUS_OK;
+    m.sub_message.commandStatus.which_sub_message =
+        (pb_size_t)VCSEC_CommandStatus_signedMessageStatus_tag;
+    CHECK(tesla_vcsec_whitelist_ingest(&m, &info) == TESLA_WHITELIST_PENDING,
+          "whitelist generic CommandStatus -> PENDING");
+
+    memset(&m, 0, sizeof(m));
+    m.which_sub_message = (pb_size_t)VCSEC_FromVCSECMessage_commandStatus_tag;
+    m.sub_message.commandStatus.operationStatus =
+        VCSEC_OperationStatus_E_OPERATIONSTATUS_OK;
+    m.sub_message.commandStatus.which_sub_message =
+        (pb_size_t)VCSEC_CommandStatus_whitelistOperationStatus_tag;
+    m.sub_message.commandStatus.sub_message.whitelistOperationStatus.operationStatus =
+        VCSEC_OperationStatus_E_OPERATIONSTATUS_WAIT;
+    CHECK(tesla_vcsec_whitelist_ingest(&m, &info) == TESLA_WHITELIST_PENDING,
+          "whitelist nested WAIT -> PENDING");
+
+    m.sub_message.commandStatus.sub_message.whitelistOperationStatus.operationStatus =
+        VCSEC_OperationStatus_E_OPERATIONSTATUS_OK;
+    m.sub_message.commandStatus.sub_message.whitelistOperationStatus.whitelistOperationInformation =
+        VCSEC_WhitelistOperation_information_E_WHITELISTOPERATION_INFORMATION_NONE;
+    CHECK(tesla_vcsec_whitelist_ingest(&m, &info) == TESLA_WHITELIST_SUCCESS,
+          "whitelist nested OK/NONE -> SUCCESS");
+
+    m.sub_message.commandStatus.sub_message.whitelistOperationStatus.whitelistOperationInformation =
+        VCSEC_WhitelistOperation_information_E_WHITELISTOPERATION_INFORMATION_ATTEMPTING_TO_ADD_KEY_THAT_IS_ALREADY_ON_THE_WHITELIST;
+    CHECK(tesla_vcsec_whitelist_ingest(&m, &info) == TESLA_WHITELIST_SUCCESS,
+          "whitelist nested OK/already-on-whitelist -> SUCCESS");
+
+    m.sub_message.commandStatus.sub_message.whitelistOperationStatus.whitelistOperationInformation =
+        VCSEC_WhitelistOperation_information_E_WHITELISTOPERATION_INFORMATION_KEYFOB_SLOTS_FULL;
+    CHECK(tesla_vcsec_whitelist_ingest(&m, &info) == TESLA_WHITELIST_ERROR,
+          "whitelist nested OK/rejection -> ERROR");
+
+    m.sub_message.commandStatus.sub_message.whitelistOperationStatus.operationStatus =
+        VCSEC_OperationStatus_E_OPERATIONSTATUS_ERROR;
+    m.sub_message.commandStatus.sub_message.whitelistOperationStatus.whitelistOperationInformation =
+        VCSEC_WhitelistOperation_information_E_WHITELISTOPERATION_INFORMATION_NONE;
+    CHECK(tesla_vcsec_whitelist_ingest(&m, &info) == TESLA_WHITELIST_ERROR,
+          "whitelist nested ERROR -> ERROR");
+
+    memset(&m, 0, sizeof(m));
+    m.which_sub_message = (pb_size_t)VCSEC_FromVCSECMessage_commandStatus_tag;
+    m.sub_message.commandStatus.operationStatus =
+        VCSEC_OperationStatus_E_OPERATIONSTATUS_ERROR;
+    CHECK(tesla_vcsec_whitelist_ingest(&m, &info) == TESLA_WHITELIST_ERROR,
+          "whitelist parent ERROR -> ERROR");
+
+    memset(&m, 0, sizeof(m));
+    m.which_sub_message = (pb_size_t)VCSEC_FromVCSECMessage_nominalError_tag;
+    m.sub_message.nominalError.genericError = 1;
+    CHECK(tesla_vcsec_whitelist_ingest(&m, &info) == TESLA_WHITELIST_ERROR,
+          "whitelist nominalError -> ERROR");
+}
+
+// Regression: the tap-response frame must survive the generated binding.
+//
+// On-car capture (keycard tap + touchscreen confirm):
+//   22 0a 1a 08 12 06 0a 04 24 86 82 64
+//   -> commandStatus{ whitelistOperationStatus{
+//        signerOfOperation{ publicKeySHA1 = 24 86 82 64 } } }
+// i.e. a TRUNCATED 4-byte key id, with operationStatus/information absent
+// (proto defaults OK/NONE apply). A fixed_length_bytes binding rejects any
+// length != 20, which failed the whole decode; dynamic bytes must accept
+// short and full-length ids.
+static void test_tap_frame_short_signer(void)
+{
+    // 1. The exact frame captured on-car after keycard tap + touchscreen
+    //    confirm. Must decode, classify as SUCCESS, and carry intact bytes.
+    uint8_t frame[16];
+    CHECK(unhex("220a1a0812060a0424868264", frame, sizeof(frame)) == 12,
+          "golden tap frame unhex");
+
+    VCSEC_FromVCSECMessage from;
+    memset(&from, 0, sizeof(from));
+    CHECK(tesla_pb_decode_vcsec_from(frame, 12, &from) == 0,
+          "golden tap frame decodes");
+    CHECK(from.which_sub_message ==
+              (pb_size_t)VCSEC_FromVCSECMessage_commandStatus_tag,
+          "frame carries commandStatus");
+
+    const VCSEC_CommandStatus *cs = &from.sub_message.commandStatus;
+    CHECK(cs->which_sub_message ==
+              (pb_size_t)VCSEC_CommandStatus_whitelistOperationStatus_tag,
+          "commandStatus carries whitelistOperationStatus");
+    const VCSEC_WhitelistOperation_status *ws =
+        &cs->sub_message.whitelistOperationStatus;
+    CHECK(ws->has_signerOfOperation, "signerOfOperation present");
+    CHECK(ws->signerOfOperation.publicKeySHA1.size == 4,
+          "key id is 4-byte truncated");
+    CHECK(ws->signerOfOperation.publicKeySHA1.bytes[0] == 0x24 &&
+              ws->signerOfOperation.publicKeySHA1.bytes[3] == 0x64,
+          "truncated key id bytes intact");
+    CHECK(ws->operationStatus == VCSEC_OperationStatus_E_OPERATIONSTATUS_OK,
+          "absent operationStatus defaults OK");
+    CHECK(ws->whitelistOperationInformation ==
+              VCSEC_WhitelistOperation_information_E_WHITELISTOPERATION_INFORMATION_NONE,
+          "absent information defaults NONE");
+
+    uint32_t info = UINT32_MAX;
+    CHECK(tesla_vcsec_whitelist_ingest(&from, &info) == TESLA_WHITELIST_SUCCESS,
+          "classifier SUCCESS for golden tap frame");
+    CHECK(info == VCSEC_WhitelistOperation_information_E_WHITELISTOPERATION_INFORMATION_NONE,
+          "classifier surfaces information=NONE");
+
+    // 2. Synthetic max-length variant: 20-byte key id with explicit OK/NONE,
+    //    encoded through the binding (exercises the encode side of the
+    //    dynamic-bytes layout too).
+    VCSEC_FromVCSECMessage v;
+    memset(&v, 0, sizeof(v));
+    v.which_sub_message = (pb_size_t)VCSEC_FromVCSECMessage_commandStatus_tag;
+    v.sub_message.commandStatus.operationStatus =
+        VCSEC_OperationStatus_E_OPERATIONSTATUS_OK;
+    v.sub_message.commandStatus.which_sub_message =
+        (pb_size_t)VCSEC_CommandStatus_whitelistOperationStatus_tag;
+    {
+        VCSEC_WhitelistOperation_status *w =
+            &v.sub_message.commandStatus.sub_message.whitelistOperationStatus;
+        w->has_signerOfOperation = true;
+        w->signerOfOperation.publicKeySHA1.size = 20;
+        for (int i = 0; i < 20; i++) {
+            w->signerOfOperation.publicKeySHA1.bytes[i] = (uint8_t)(0xA0 + i);
+        }
+        w->operationStatus = VCSEC_OperationStatus_E_OPERATIONSTATUS_OK;
+        w->whitelistOperationInformation =
+            VCSEC_WhitelistOperation_information_E_WHITELISTOPERATION_INFORMATION_NONE;
+    }
+
+    uint8_t buf[64];
+    size_t n = 0;
+    {
+        pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
+        CHECK(pb_encode(&os, VCSEC_FromVCSECMessage_fields, &v),
+              "synthetic 20-byte-signer frame encodes");
+        n = os.bytes_written;
+    }
+
+    memset(&from, 0, sizeof(from));
+    CHECK(tesla_pb_decode_vcsec_from(buf, n, &from) == 0,
+          "synthetic 20-byte-signer frame decodes");
+    {
+        const VCSEC_WhitelistOperation_status *w =
+            &from.sub_message.commandStatus.sub_message.whitelistOperationStatus;
+        CHECK(w->has_signerOfOperation &&
+                  w->signerOfOperation.publicKeySHA1.size == 20 &&
+                  w->signerOfOperation.publicKeySHA1.bytes[0] == 0xA0 &&
+                  w->signerOfOperation.publicKeySHA1.bytes[19] == 0xB3,
+              "full-length key id survives round-trip in-bounds");
+    }
+
+    memset(&info, 0, sizeof(info));
+    CHECK(tesla_vcsec_whitelist_ingest(&from, &info) == TESLA_WHITELIST_SUCCESS,
+          "classifier SUCCESS for full-length signer");
+
+    // 3. Same short-signer shape but an explicit nested ERROR on the wire
+    //    must still classify as ERROR (defaults must not mask rejections).
+    //    Lengths recomputed: WOS 8->10, commandStatus 10->12.
+    CHECK(unhex("220c1a0a12060a0424868264"
+                "1802",
+                frame, sizeof(frame)) == 14,
+          "error-tap frame unhex");
+    memset(&from, 0, sizeof(from));
+    CHECK(tesla_pb_decode_vcsec_from(frame, 14, &from) == 0,
+          "error-tap frame decodes");
+    CHECK(from.sub_message.commandStatus.sub_message.whitelistOperationStatus
+              .operationStatus == VCSEC_OperationStatus_E_OPERATIONSTATUS_ERROR,
+          "explicit wire ERROR parsed");
+    CHECK(tesla_vcsec_whitelist_ingest(&from, &info) == TESLA_WHITELIST_ERROR,
+          "classifier ERROR for explicit wire ERROR");
+}
+
 static void test_handshake_negative(void)
 {
     uint8_t challenge[16] = {0xAB,0xAB,0xAB,0xAB,0xAB,0xAB,0xAB,0xAB,
@@ -759,6 +954,8 @@ int main(void)
     test_handshake_negative();
     test_command_roundtrip();
     test_vcsec_state_machine();
+    test_vcsec_whitelist_classifier();
+    test_tap_frame_short_signer();
     test_replay_window();
 
     printf("\n%d failure(s)\n", g_fail);

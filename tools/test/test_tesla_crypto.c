@@ -16,8 +16,7 @@
 // Known-answer vectors come from Tesla's Apache-2.0 protocol.md (test keys,
 // K, SESSION_INFO_KEY, session-info HMAC, AES-GCM command example), the
 // vehicle-command metadata_test.go checksum vector, and standard digest
-// vectors. The "authenticated command" subkey vector was computed with
-// openssl against the published K.
+// vectors.
 
 #include "crypto.h"
 #include "session.h"
@@ -97,12 +96,10 @@ static const char VEHICLE_PUB_HEX[] =
     "04c7a1f47138486aa4729971494878d33b1a24e39571f748a6e16c5955b3d877d3"
     "a6aaa0e955166474af5d32c410f439a2234137ad1bb085fd4e8813c958f11d97";
 
-// K = SHA1(ECDH X-coord)[:16]; SESSION_INFO_KEY; AUTH_CMD_KEY (openssl).
+// K = SHA1(ECDH X-coord)[:16]; SESSION_INFO_KEY (both from protocol.md).
 static const char K_HEX[]          = "1b2fce19967b79db696f909cff89ea9a";
 static const char SESSION_KEY_HEX[] =
     "fceb679ee7bca756fcd441bf238bf2f338629b41d9eb9c67be1b32c9672ce300";
-static const char AUTH_CMD_KEY_HEX[] =
-    "6d3a14d0b6d762e4f076739e2cf6edd291d2e56e3f25bc6a2af5cb26dc753b14";
 
 // Session-info handshake example.
 static const char CHALLENGE_HEX[]   = "1588d5a30eabc6f8fc9a951b11f6fd11";
@@ -236,10 +233,6 @@ static void test_subkeys(void)
     tesla_session_info_key(k, d);
     CHECK(check_hex(d, TESLA_HMAC_LEN, SESSION_KEY_HEX),
           "SESSION_INFO_KEY = HMAC-SHA256(K, \"session info\") matches protocol.md");
-
-    tesla_authenticated_command_key(k, d);
-    CHECK(check_hex(d, TESLA_HMAC_LEN, AUTH_CMD_KEY_HEX),
-          "AUTH_CMD_KEY = HMAC-SHA256(K, \"authenticated command\") matches openssl");
 }
 
 static void test_metadata_build(void)

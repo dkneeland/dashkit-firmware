@@ -1,16 +1,16 @@
 /*
  * Tesla BLE adapter: NimBLE *central* connection to the vehicle-command GATT
- * service, plus the observer scan.
+ * service.
  *
- * Owns the entire central GAP path: a scan callback, a connect callback, a
- * GATT discovery flow, and the vehicle notification (indicate) handler —
- * entirely separate from the peripheral GATT server's gap_event_handler in
- * main/ble/ble_server.c. A central connection event must never feed the
- * server's slot table.
+ * Owns the entire central GAP path: a connect callback, a GATT discovery
+ * flow, and the vehicle notification (indicate) handler — entirely separate
+ * from the peripheral GATT server's gap_event_handler in main/ble/ble_server.c.
+ * A central connection event must never feed the server's slot table.
  *
- * One car link at a time; the client connects → exchanges → sends →
- * disconnects (idle-disconnect). Messages are framed with the 2-byte
- * big-endian length prefix the vehicle expects.
+ * One car link at a time. The car's BLE address comes from app provisioning
+ * (app-channel opcode 0x04, persisted in NVS) — this module never scans.
+ * Messages are framed with the 2-byte big-endian length prefix the vehicle
+ * expects.
  */
 
 #pragma once
@@ -29,10 +29,12 @@ extern "C" {
 // vehicle (i.e. the RoutableMessage bytes, with the framing stripped).
 typedef void (*tesla_ble_rx_fn_t)(const uint8_t *data, size_t len, void *arg);
 
-// Starts the observer scan (logs nearby Tesla advertisements). Safe to call
-// once at boot; the scan runs continuously and is independent of the central
-// connect path.
-esp_err_t tesla_ble_adapter_observer_init(void);
+// Largest vehicle frame the RX path materializes. The NimBLE adapter can
+// assemble a payload of roughly 598 bytes, so keep a little headroom while
+// using one bound for the adapter, pairing/client queues, and task buffers.
+// This is deliberately a frame-only bound; the adapter allocates two extra
+// bytes for the big-endian length prefix.
+#define TESLA_RX_FRAME_MAX 600
 
 // Registers the frame receive callback used by the central connection.
 void tesla_ble_set_rx_cb(tesla_ble_rx_fn_t cb, void *arg);
@@ -53,7 +55,7 @@ esp_err_t tesla_ble_send(const uint8_t *data, size_t len);
 // no-op when not connected.
 esp_err_t tesla_ble_keepalive(void);
 
-// Terminate the central link (idle-disconnect / error). Safe to call when not
+// Terminate the central link (error / end of use). Safe to call when not
 // connected.
 void tesla_ble_disconnect(void);
 

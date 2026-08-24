@@ -11,9 +11,12 @@ crypto layer (see the unit test in `tools/test/test_tesla_crypto.c`).
 
 ## Files
 
-- `universal_message.proto` — `RoutableMessage`, domains, flags, faults
-- `signatures.proto` — metadata tags, signature types, session info
-- `vcsec.proto`, `vehicle.proto`, `car_server.proto`, `managed_charging.proto`
-  — application payloads
-- `keys.proto` — key roles (Owner, Driver, Charging Manager, ...)
-- `common.proto`, `errors.proto` — shared types
+- `universal_message.proto` - `RoutableMessage`, domains, flags, faults
+- `signatures.proto` - metadata tags, signature types, session info
+- `vcsec.proto` - application payloads (status, whitelist operations)
+- `keys.proto`, `errors.proto` - key roles / error codes
+
+Not vendored: `vehicle.proto`, `car_server.proto`, `managed_charging.proto`,
+`common.proto` (the Infotainment domain) and `google/protobuf/timestamp.proto`.
+None is imported by the schemas above; re-copy them from the same pinned
+commit when the Infotainment phase lands.

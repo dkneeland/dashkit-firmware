@@ -145,14 +145,6 @@ int tesla_session_info_key(const uint8_t k[TESLA_SHARED_KEY_LEN],
                              (const uint8_t *)label, sizeof(label) - 1, out);
 }
 
-int tesla_authenticated_command_key(const uint8_t k[TESLA_SHARED_KEY_LEN],
-                                    uint8_t out[TESLA_HMAC_LEN])
-{
-    static const char label[] = "authenticated command";
-    return tesla_hmac_sha256(k, TESLA_SHARED_KEY_LEN,
-                             (const uint8_t *)label, sizeof(label) - 1, out);
-}
-
 int tesla_gcm_encrypt(const uint8_t k[TESLA_SHARED_KEY_LEN],
                       const uint8_t *plaintext, size_t plaintext_len,
                       const uint8_t *aad, size_t aad_len,

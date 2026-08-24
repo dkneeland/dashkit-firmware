@@ -149,8 +149,9 @@ typedef struct _VCSEC_ToVCSECMessage {
     VCSEC_SignedMessage signedMessage;
 } VCSEC_ToVCSECMessage;
 
+typedef PB_BYTES_ARRAY_T(20) VCSEC_KeyIdentifier_publicKeySHA1_t;
 typedef struct _VCSEC_KeyIdentifier {
-    pb_byte_t publicKeySHA1[20];
+    VCSEC_KeyIdentifier_publicKeySHA1_t publicKeySHA1;
 } VCSEC_KeyIdentifier;
 
 typedef struct _VCSEC_KeyMetadata {
@@ -414,7 +415,7 @@ extern "C" {
 /* Initializer values for message structs */
 #define VCSEC_SignedMessage_init_default         {{0, {0}}, _VCSEC_SignatureType_MIN}
 #define VCSEC_ToVCSECMessage_init_default        {false, VCSEC_SignedMessage_init_default}
-#define VCSEC_KeyIdentifier_init_default         {{0}}
+#define VCSEC_KeyIdentifier_init_default         {{0, {0}}}
 #define VCSEC_KeyMetadata_init_default           {_VCSEC_KeyFormFactor_MIN}
 #define VCSEC_PublicKey_init_default             {{0, {0}}}
 #define VCSEC_WhitelistInfo_init_default         {0, 0, {VCSEC_KeyIdentifier_init_default, VCSEC_KeyIdentifier_init_default, VCSEC_KeyIdentifier_init_default, VCSEC_KeyIdentifier_init_default, VCSEC_KeyIdentifier_init_default, VCSEC_KeyIdentifier_init_default, VCSEC_KeyIdentifier_init_default, VCSEC_KeyIdentifier_init_default, VCSEC_KeyIdentifier_init_default, VCSEC_KeyIdentifier_init_default, VCSEC_KeyIdentifier_init_default, VCSEC_KeyIdentifier_init_default, VCSEC_KeyIdentifier_init_default, VCSEC_KeyIdentifier_init_default, VCSEC_KeyIdentifier_init_default, VCSEC_KeyIdentifier_init_default}, 0}
@@ -434,7 +435,7 @@ extern "C" {
 #define VCSEC_FromVCSECMessage_init_default      {0, {VCSEC_VehicleStatus_init_default}}
 #define VCSEC_SignedMessage_init_zero            {{0, {0}}, _VCSEC_SignatureType_MIN}
 #define VCSEC_ToVCSECMessage_init_zero           {false, VCSEC_SignedMessage_init_zero}
-#define VCSEC_KeyIdentifier_init_zero            {{0}}
+#define VCSEC_KeyIdentifier_init_zero            {{0, {0}}}
 #define VCSEC_KeyMetadata_init_zero              {_VCSEC_KeyFormFactor_MIN}
 #define VCSEC_PublicKey_init_zero                {{0, {0}}}
 #define VCSEC_WhitelistInfo_init_zero            {0, 0, {VCSEC_KeyIdentifier_init_zero, VCSEC_KeyIdentifier_init_zero, VCSEC_KeyIdentifier_init_zero, VCSEC_KeyIdentifier_init_zero, VCSEC_KeyIdentifier_init_zero, VCSEC_KeyIdentifier_init_zero, VCSEC_KeyIdentifier_init_zero, VCSEC_KeyIdentifier_init_zero, VCSEC_KeyIdentifier_init_zero, VCSEC_KeyIdentifier_init_zero, VCSEC_KeyIdentifier_init_zero, VCSEC_KeyIdentifier_init_zero, VCSEC_KeyIdentifier_init_zero, VCSEC_KeyIdentifier_init_zero, VCSEC_KeyIdentifier_init_zero, VCSEC_KeyIdentifier_init_zero}, 0}
@@ -545,7 +546,7 @@ X(a, STATIC,   OPTIONAL, MESSAGE,  signedMessage,     1)
 #define VCSEC_ToVCSECMessage_signedMessage_MSGTYPE VCSEC_SignedMessage
 
 #define VCSEC_KeyIdentifier_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, FIXED_LENGTH_BYTES, publicKeySHA1,     1)
+X(a, STATIC,   SINGULAR, BYTES,    publicKeySHA1,     1)
 #define VCSEC_KeyIdentifier_CALLBACK NULL
 #define VCSEC_KeyIdentifier_DEFAULT NULL
 

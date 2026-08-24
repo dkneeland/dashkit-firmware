@@ -222,8 +222,28 @@ typedef enum {
     TESLA_VCSEC_ERROR,        // terminal error (nominalError)
 } tesla_vcsec_phase_t;
 
+// Enrollment-specific whitelist result. A generic CommandStatus or a
+// vehicleStatus is not evidence that a key was enrolled; only the nested
+// whitelist operation's explicit OK result can prove success.
+typedef enum {
+    TESLA_WHITELIST_PENDING = 0,
+    TESLA_WHITELIST_SUCCESS,
+    TESLA_WHITELIST_ERROR,
+} tesla_whitelist_phase_t;
+
 // Classify a single FromVCSECMessage (VCSEC may emit up to three responses to
 // one request): WAIT/ERROR are pending, vehicleStatus is STATUS, nominalError
 // is terminal ERROR, everything else is terminal DONE. Currently GET_STATUS-
 // only; the whitelist-pairing variant can extend it.
 tesla_vcsec_phase_t tesla_vcsec_ingest(const VCSEC_FromVCSECMessage *m);
+
+// Classify one plaintext VCSEC response during present-key enrollment.
+// Returns SUCCESS only for CommandStatus/whitelistOperationStatus with both
+// parent and nested operationStatus OK and information NONE or
+// ATTEMPTING_TO_ADD_KEY_THAT_IS_ALREADY_ON_THE_WHITELIST. WAIT/busy, generic
+// CommandStatus, vehicleStatus, and empty messages remain PENDING. A
+// nominalError, parent/nested ERROR, or explicit whitelist rejection is ERROR.
+// If info_out is non-NULL, it receives the whitelist information value for a
+// nested result, or UINT32_MAX for a non-whitelist/nominal error response.
+tesla_whitelist_phase_t tesla_vcsec_whitelist_ingest(
+    const VCSEC_FromVCSECMessage *m, uint32_t *info_out);

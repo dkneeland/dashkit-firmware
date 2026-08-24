@@ -85,10 +85,9 @@ fi
 
 "${PY}" "${REPO_ROOT}/tools/gen_proto.py"
 
-# Compare only tracked files: gen_proto also emits bindings for the imported
-# Infotainment protos (car_server/common/managed_charging/vehicle), which are
-# intentionally not committed yet — those stay untracked and are not drift. git
-# diff also normalizes line endings, so a Windows checkout (CRLF) does not
+# Compare only tracked files: the vendored proto set covers every import of
+# the generated schemas, so gen_proto emits exactly the committed bindings.
+# git diff also normalizes line endings, so a Windows checkout (CRLF) does not
 # false-fail.
 if ! git -C "${REPO_ROOT}" diff --quiet -- "${GENERATED_DIR}"; then
     echo "==> MISMATCH: regenerated nanopb bindings differ from committed" >&2

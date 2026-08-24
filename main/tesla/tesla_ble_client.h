@@ -1,11 +1,12 @@
 /*
  * Tesla BLE client — high-level vehicle-command facade + poll loop.
  *
- * Orchestrates connect → VCSEC handshake → GET_STATUS poll → disconnect
- * (idle-disconnect). The low-level central GATT transport lives in
- * tesla_ble_adapter; this module owns the protocol session (tesla_session_t),
- * the response correlation, and the status logging. Gated by
- * CONFIG_DASHKIT_TESLA_BLE so a feature-off build drops it entirely.
+ * Orchestrates connect → VCSEC handshake → persistent GET_STATUS poll (the
+ * link stays up; matches esphome-tesla-ble). The low-level central GATT
+ * transport lives in tesla_ble_adapter; this module owns the protocol session
+ * (tesla_session_t), the response correlation, and the app-channel status
+ * reporting. Gated by CONFIG_DASHKIT_TESLA_BLE so a feature-off build drops
+ * it entirely.
  */
 
 #pragma once

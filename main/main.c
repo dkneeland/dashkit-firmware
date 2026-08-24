@@ -31,12 +31,9 @@
 #error "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE must be enabled (a crashing OTA image would brick the device)"
 #endif
 
-// Tesla BLE central client relies on the NimBLE observer + central roles
-// (observer scan for the car; central for connect/discovery/write).
-#if defined(CONFIG_DASHKIT_TESLA_BLE) && \
-    (!defined(CONFIG_BT_NIMBLE_ROLE_OBSERVER) || (CONFIG_BT_NIMBLE_ROLE_OBSERVER != 1))
-#error "CONFIG_DASHKIT_TESLA_BLE requires CONFIG_BT_NIMBLE_ROLE_OBSERVER (set CONFIG_BT_NIMBLE_ROLE_OBSERVER=y)"
-#endif
+// Tesla BLE central client relies on the NimBLE central role (connect,
+// discovery, write/indicate against the vehicle). No observer: the app
+// provisions the car's address over the app channel.
 #if defined(CONFIG_DASHKIT_TESLA_BLE) && \
     (!defined(CONFIG_BT_NIMBLE_ROLE_CENTRAL) || (CONFIG_BT_NIMBLE_ROLE_CENTRAL != 1))
 #error "CONFIG_DASHKIT_TESLA_BLE requires CONFIG_BT_NIMBLE_ROLE_CENTRAL (set CONFIG_BT_NIMBLE_ROLE_CENTRAL=y)"
@@ -228,14 +225,12 @@ void app_main(void)
 
 #if defined(CONFIG_DASHKIT_TESLA_BLE)
     // Boot canary for the Tesla link: role state must be visible and a missing
-    // key/link must not be silent. Enrollment populates the tesla NVS
-    // key/vin/mac; until then the pairing task waits for provisioning and the
-    // client task logs "no enrolled key".
-    ESP_LOGI(TAG, "Tesla BLE: enabled (observer=%d, central=%d). Observer scan "
-                  "+ client poll active; pairing (enrollment) runs when a "
-                  "key/link is not yet present.",
-             CONFIG_BT_NIMBLE_ROLE_OBSERVER, CONFIG_BT_NIMBLE_ROLE_CENTRAL);
-    ESP_ERROR_CHECK(tesla_ble_adapter_observer_init());
+    // key/link must not be silent. The app provisions the car (opcode 0x04)
+    // and starts enrollment (0x01); until then the firmware only reports
+    // "never enrolled".
+    ESP_LOGI(TAG, "Tesla BLE: enabled (central=%d). Persistent VCSEC status "
+                  "poll; enrollment is provisioned + started from the app.",
+             CONFIG_BT_NIMBLE_ROLE_CENTRAL);
     ESP_ERROR_CHECK(tesla_pairing_init());
     ESP_ERROR_CHECK(tesla_ble_client_init());
 #endif

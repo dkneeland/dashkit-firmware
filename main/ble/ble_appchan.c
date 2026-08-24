@@ -6,6 +6,7 @@
 #include "host/ble_att.h"
 
 #if CONFIG_DASHKIT_TESLA_BLE
+#include "tesla_ble_storage.h"
 #include "tesla_pairing.h"
 #endif
 
@@ -38,10 +39,30 @@ static uint16_t s_app_status_val_handle;
 static uint8_t s_last_frame[7] = { 0x01, TESLA_LINK_NEVER_ENROLLED, 0xFF, 0xFF, 0xFF, 0, TESLA_FAULT_NONE };
 
 // ---------------------------------------------------------------------------
-// Command writes (CADA0201): [opcode][value_lo][value_hi?]
+// Command writes (CADA0201): [opcode][value_lo][value_hi?] / [opcode][payload]
 // ---------------------------------------------------------------------------
-// The app-channel command is the only enrollment trigger; it writes on this
-// dedicated characteristic, separate from CAN control (CADA0004).
+// The app-channel commands are the only enrollment triggers; they write on
+// this dedicated characteristic, separate from CAN control (CADA0004).
+
+// TESLA_CMD_PROVISION payload: [17B VIN][1B addr type][6B MAC in NimBLE's
+// ble_addr_t.val order]. Stages the car; the app then sends 0x01 to enroll.
+#if CONFIG_DASHKIT_TESLA_BLE
+static esp_err_t app_provision(const uint8_t *p)
+{
+    char vin[18];
+    tesla_car_addr_t addr;
+
+    if (memchr(p, '\0', 17) != NULL) {
+        return ESP_ERR_INVALID_ARG;   // VIN is 17 raw ASCII bytes, no NULs
+    }
+    memcpy(vin, p, 17);
+    vin[17] = '\0';
+    addr.type = p[17];
+    memcpy(addr.val, &p[18], 6);
+    return tesla_pairing_configure(vin, &addr);
+}
+#endif
+
 static int app_cmd_access(uint16_t conn_handle, uint16_t attr_handle,
                           struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
@@ -58,7 +79,8 @@ static int app_cmd_access(uint16_t conn_handle, uint16_t attr_handle,
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
 
-    uint8_t buf[3];
+    // Longest command is TESLA_CMD_PROVISION at 25 bytes; the rest are 3.
+    uint8_t buf[TESLA_PROVISION_LEN];
     uint16_t copy_len = len < sizeof(buf) ? len : sizeof(buf);
     os_mbuf_copydata(ctxt->om, 0, copy_len, buf);
     uint8_t opcode = buf[0];
@@ -74,6 +96,16 @@ static int app_cmd_access(uint16_t conn_handle, uint16_t attr_handle,
         break;
     case TESLA_CMD_CANCEL:
         err = tesla_pairing_cancel();
+        break;
+    case TESLA_CMD_PROVISION:
+        if (len != TESLA_PROVISION_LEN) {
+            return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+        }
+        if (tesla_storage_has_key()) {
+            ESP_LOGW(TAG, "provision ignored: a key is already enrolled");
+            return BLE_ATT_ERR_UNLIKELY;
+        }
+        err = app_provision(&buf[1]);
         break;
     default:
         ESP_LOGW(TAG, "Unknown app-channel command: 0x%02x", opcode);
@@ -156,21 +188,32 @@ esp_err_t ble_appchan_init(void)
 void ble_appchan_report_status(uint8_t link_state, uint8_t presence, uint8_t lock,
                                uint8_t sleep, uint8_t flags, uint8_t fault_detail)
 {
-    uint16_t conn = ble_server_get_conn_handle();
-    if (s_app_status_val_handle == 0) {
+    // Build the candidate frame first and drop it if nothing changed: the
+    // pairing task re-reports staged/never-enrolled on a fast poll loop, and
+    // notifying the identical frame at 5 Hz was pure spam. A changed frame is
+    // always stored (so a later GATT read sees current state) but only
+    // notified when a phone is connected.
+    uint8_t frame[7];
+    frame[0] = 0x01;               // frame version
+    frame[1] = link_state;
+    frame[2] = presence;
+    frame[3] = lock;
+    frame[4] = sleep;
+    frame[5] = flags;
+    frame[6] = (link_state == TESLA_LINK_ENROLLMENT_FAULT)
+               ? fault_detail : TESLA_FAULT_NONE;
+
+    if (memcmp(frame, s_last_frame, sizeof(frame)) == 0) {
         return;
     }
+    memcpy(s_last_frame, frame, sizeof(frame));
 
-    s_last_frame[0] = 0x01;               // frame version
-    s_last_frame[1] = link_state;
-    s_last_frame[2] = presence;
-    s_last_frame[3] = lock;
-    s_last_frame[4] = sleep;
-    s_last_frame[5] = flags;
-    s_last_frame[6] = (link_state == TESLA_LINK_ENROLLMENT_FAULT)
-                      ? fault_detail : TESLA_FAULT_NONE;
-
-    if (conn == BLE_HS_CONN_HANDLE_NONE) {
+    // The DashKit sits in the car trim and is driven by one phone at a time, so
+    // the status notify targets only the single "active" connection (the one
+    // subscribed to the CAN stream, ble_server's s_active_handle). Fan-out to
+    // every subscribed phone is intentionally out of scope.
+    uint16_t conn = ble_server_get_conn_handle();
+    if (conn == BLE_HS_CONN_HANDLE_NONE || s_app_status_val_handle == 0) {
         return;
     }
 

@@ -9,9 +9,10 @@
  * this is an interactive, user-present flow (mirroring the reference
  * SendAddKeyRequestWithRole).
  *
- * Enrolled role is CHARGING_MANAGER (read + charge only). Triggered by the app
- * channel calling tesla_pairing_configure(); the task then runs the
- * enrollment and hands off to the client poll loop.
+ * Enrolled role is CHARGING_MANAGER (read + charge only). Provisioning (VIN +
+ * car BLE address) arrives from the app via tesla_pairing_configure(), called
+ * by the app-channel handler; enrollment itself starts only on the app's
+ * explicit 0x01 command and hands off to the client poll loop on success.
  *
  * The enrolled private key is plaintext in NVS (release blocker); never log
  * any key material.
@@ -33,15 +34,11 @@ extern "C" {
 // and then performs the enrollment. Safe to call once at boot (feature-gated).
 esp_err_t tesla_pairing_init(void);
 
-// Provision the target VIN (17 chars) + car BLE address and wake the pairing
-// task to enroll. This is the firmware half of the app pairing UX.
+// Provision the target VIN (17 chars) + car BLE address and stage the car
+// (TESLA_LINK_STAGED). This is the firmware half of the app pairing UX: the
+// app scans for the vehicle, then sends app-channel opcode 0x04 with the
+// VIN + MAC it found. Never begins enrollment on its own.
 esp_err_t tesla_pairing_configure(const char *vin, const tesla_car_addr_t *addr);
-
-// Observer hook: stages our target car (TESLA_LINK_STAGED / 0x05) for the
-// app; never begins enrollment itself.
-bool tesla_pairing_is_target_vehicle(const char *name, size_t name_len);
-esp_err_t tesla_pairing_observe_vehicle(const char *name, size_t name_len,
-                                        const tesla_car_addr_t *addr);
 
 // ---- app-channel control (app-triggered-only pairing) ----
 //
@@ -55,8 +52,8 @@ esp_err_t tesla_pairing_start(void);
 // Cancel an in-progress (open tap-window) enrollment; returns to staged.
 esp_err_t tesla_pairing_cancel(void);
 
-// Factory-reset Tesla state (erase the enrolled key). The next car sighting
-// re-stages (TESLA_LINK_STAGED) and enrollment waits for an app start again.
+// Factory-reset Tesla state (erase the enrolled key). The app provisions the
+// car again (opcode 0x04) before the next enrollment.
 esp_err_t tesla_pairing_reset(void);
 
 #ifdef __cplusplus

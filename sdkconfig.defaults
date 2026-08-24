@@ -16,7 +16,7 @@ CONFIG_BT_NIMBLE_MAX_CONNECTIONS=6
 CONFIG_BT_NIMBLE_GATT_MAX_PROCS=8
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
-CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
@@ -34,16 +34,17 @@ CONFIG_BT_NIMBLE_MAX_CCCDS=16
 
 # Controller BLE activity budget. ESP32-S3 sources the C3 controller Kconfig,
 # so BT_CTRL_BLE_MAX_ACT IS available here; it counts connections + scan + sync
-# + adv combined (~828 B/instance). Baseline is observer scan (1) + peripheral
-# advertising (1); 8 leaves 6 connection slots — up to 5 phone/Mac peripherals
-# plus the transient Tesla central (GET_STATUS poll) — in lockstep with the host
-# BT_NIMBLE_MAX_CONNECTIONS=6 (max 9 on S3).
+# + adv combined (~828 B/instance). Baseline is peripheral advertising (1);
+# 8 leaves 7 connection slots — up to 6 phone/Mac peripherals plus the Tesla
+# central — comfortably above the host BT_NIMBLE_MAX_CONNECTIONS=6 (max 9 on
+# S3), so the controller is never the binding constraint.
 CONFIG_BT_CTRL_BLE_MAX_ACT=8
 
-# Tesla BLE (vehicle-command) client: CENTRAL + OBSERVER roles for
-# connect → VCSEC handshake → GET_STATUS poll → idle-disconnect. MAX_CONNECTIONS
-# =6 (with BT_CTRL_BLE_MAX_ACT=8): a transient central car link must not crowd
-# out several phone peripherals (PR #58 review).
+# Tesla BLE (vehicle-command) client: CENTRAL role for connect → VCSEC
+# handshake → persistent GET_STATUS poll (matches esphome-tesla-ble: the link
+# stays up and low-power VCSEC polling does not wake or hold awake the car).
+# No observer role — the app provisions VIN + car BLE address over the
+# app-channel service (CADA0201 opcode 0x04).
 CONFIG_DASHKIT_TESLA_BLE=y
 
 # Partition table

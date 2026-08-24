@@ -74,11 +74,11 @@ int tesla_derive_shared_key(const uint8_t priv[TESLA_PRIVKEY_LEN],
                             uint8_t out[TESLA_SHARED_KEY_LEN]);
 
 // Subkeys derived from K (protocol.md "Key agreement" / "HMAC-SHA256
-// authentication").
+// authentication"). Only the session-info subkey is used today; commands are
+// signed with AES-GCM_PERSONALIZED, not the HMAC "authenticated command"
+// signature type.
 int tesla_session_info_key(const uint8_t k[TESLA_SHARED_KEY_LEN],
                            uint8_t out[TESLA_HMAC_LEN]);
-int tesla_authenticated_command_key(const uint8_t k[TESLA_SHARED_KEY_LEN],
-                                    uint8_t out[TESLA_HMAC_LEN]);
 
 // AES-128-GCM authenticated encryption. The caller supplies a fresh 12-byte
 // nonce (one CSPRNG draw per message); ciphertext must hold plaintext_len

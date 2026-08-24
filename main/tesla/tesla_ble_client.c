@@ -41,16 +41,21 @@ static const char *TAG = "tesla_client";
 #define RECONNECT_RETRY_MS   10000
 #define STATUS_DEBOUNCE_MS   300000
 
-// Max BLE frame (framing + payload). 320 B fits VCSEC GET_STATUS responses;
-// grow RX_FRAME_MAX (and the transport's payload max) if larger Infotainment
-// responses are ever needed (the reference transports up to 1024-byte BLE).
-#define RX_FRAME_MAX 320
+// Vehicle frames are capped by TESLA_RX_FRAME_MAX (tesla_ble_adapter.h) so
+// both owners of the shared RX callback size their queues identically.
 typedef struct {
     uint16_t len;
-    uint8_t  data[RX_FRAME_MAX];
+    uint8_t  data[TESLA_RX_FRAME_MAX];
 } rx_frame_t;
 
 static QueueHandle_t s_rxq;
+
+// RX callbacks run on the NimBLE host task and must not put a 600-byte frame
+// on its stack. recv_for_route() uses a separate task-owned item so callback
+// arrival cannot overwrite a frame while it is being parsed.
+static rx_frame_t s_client_cb_frame;
+static rx_frame_t s_client_task_frame;
+static uint8_t s_client_response[TESLA_RX_FRAME_MAX];
 
 // Hardware-RNG wrapper for the session crypto (mbedTLS ECDH blinding + nonce).
 static int hw_rng(void *ctx, uint8_t *buf, size_t len)
@@ -68,13 +73,12 @@ static uint64_t now_ms(void)
 static void client_rx_cb(const uint8_t *data, size_t len, void *arg)
 {
     (void)arg;
-    if (s_rxq == NULL || len == 0 || len > RX_FRAME_MAX) {
+    if (s_rxq == NULL || len == 0 || len > TESLA_RX_FRAME_MAX) {
         return;
     }
-    rx_frame_t f;
-    f.len = (uint16_t)len;
-    memcpy(f.data, data, len);
-    if (xQueueSend(s_rxq, &f, 0) != pdTRUE) {
+    s_client_cb_frame.len = (uint16_t)len;
+    memcpy(s_client_cb_frame.data, data, len);
+    if (xQueueSend(s_rxq, &s_client_cb_frame, 0) != pdTRUE) {
         // The queue backs up only with stale/extra frames the car pushed while
         // we were idle between polls (each request re-reads its own response by
         // fresh routing). Dropping them is benign, so keep it at DEBUG — a WARN
@@ -95,11 +99,10 @@ static esp_err_t recv_for_route(uint8_t *buf, size_t cap, size_t *out_len,
     uint32_t total = pdMS_TO_TICKS(timeout_ms);
 
     while (true) {
-        rx_frame_t f;
         uint32_t elapsed = (uint32_t)(xTaskGetTickCount() - start);
         uint32_t remain = (elapsed < total) ? total - elapsed : 0;
 
-        if (xQueueReceive(s_rxq, &f, (TickType_t)remain) != pdTRUE) {
+        if (xQueueReceive(s_rxq, &s_client_task_frame, (TickType_t)remain) != pdTRUE) {
             return ESP_ERR_TIMEOUT;
         }
         UniversalMessage_RoutableMessage m;
@@ -108,8 +111,8 @@ static esp_err_t recv_for_route(uint8_t *buf, size_t cap, size_t *out_len,
                                     // read as garbage (a non-matching / fault frame
                                     // would otherwise be silently dropped as "not
                                     // our response").
-        if (tesla_pb_decode_routable(f.data, f.len, &m) != 0) {
-            ESP_LOGD(TAG, "rx frame unparseable (len=%u); ignoring", (unsigned)f.len);
+        if (tesla_pb_decode_routable(s_client_task_frame.data, s_client_task_frame.len, &m) != 0) {
+            ESP_LOGD(TAG, "rx frame unparseable (len=%u); ignoring", (unsigned)s_client_task_frame.len);
             continue;   // unparseable frame: drop, keep waiting
         }
         if (m.has_to_destination &&
@@ -118,12 +121,12 @@ static esp_err_t recv_for_route(uint8_t *buf, size_t cap, size_t *out_len,
             m.to_destination.sub_destination.routing_address.size == 16 &&
             memcmp(m.to_destination.sub_destination.routing_address.bytes,
                    routing, 16) == 0) {
-            if (f.len > cap) {
+            if (s_client_task_frame.len > cap) {
                 return ESP_ERR_INVALID_SIZE;
             }
-            memcpy(buf, f.data, f.len);
+            memcpy(buf, s_client_task_frame.data, s_client_task_frame.len);
             if (out_len != NULL) {
-                *out_len = f.len;
+                *out_len = s_client_task_frame.len;
             }
             return ESP_OK;
         }
@@ -134,10 +137,10 @@ static esp_err_t recv_for_route(uint8_t *buf, size_t cap, size_t *out_len,
             m.signedMessageStatus.signed_message_fault != 0) {
             ESP_LOGW(TAG, "car replied w/ signedMessageStatus fault=%u (len=%u), not for our route",
                      (unsigned)m.signedMessageStatus.signed_message_fault,
-                     (unsigned)f.len);
+                     (unsigned)s_client_task_frame.len);
         } else {
             ESP_LOGD(TAG, "rx frame not for our route (len=%u); ignoring",
-                     (unsigned)f.len);
+                     (unsigned)s_client_task_frame.len);
         }
     }
 }
@@ -189,9 +192,11 @@ static const char *presence_name(int v)
 
 // App-channel (CADA0202) status reporting. link 0x00/0x05/0x03/0x04 are owned by
 // the pairing task (no key staged/pairing); this client owns 0x01/0x02 (enrolled,
-// not connected / connected + live status). Throttle non-connected reports so a
-// fast reconnect loop can't flood the phone.
-static uint8_t s_last_link = 0xFF;
+// not connected / connected + live status).
+//
+// No per-link throttle is needed here: ble_appchan_report_status() is the single
+// dedup point (a full-frame memcmp), so a fast reconnect loop re-sends the same
+// (link, 0xFF, 0xFF, 0xFF, 0, no-fault) frame and is suppressed there.
 static void report_app_link(uint8_t link, int presence, int lock, int sleep)
 {
     uint8_t p = 0xFF, l = 0xFF, s8 = 0xFF;
@@ -202,12 +207,6 @@ static void report_app_link(uint8_t link, int presence, int lock, int sleep)
     if (sleep == VCSEC_VehicleSleepStatus_E_VEHICLE_SLEEP_STATUS_ASLEEP) s8 = 1;
     else if (sleep == VCSEC_VehicleSleepStatus_E_VEHICLE_SLEEP_STATUS_AWAKE) s8 = 0;
 
-    // Always refresh connected status (presence/lock/sleep change); throttle the
-    // rest so a brief gap doesn't spam identical 0x01 frames.
-    if (link == s_last_link && link != TESLA_LINK_ENROLLED_CONNECTED) {
-        return;
-    }
-    s_last_link = link;
     ble_appchan_report_status(link, p, l, s8, 0, TESLA_FAULT_NONE);
 }
 
@@ -253,20 +252,21 @@ static esp_err_t refresh_status(tesla_session_t *sess, const char *vin,
     // fine for GET_STATUS; confirm the counter model against a real car.
     bool got_status = false, errored = false;
     for (int i = 0; i < 3 && !got_status && !errored; i++) {
-        uint8_t resp[RX_FRAME_MAX], plain[TESLA_PB_PAYLOAD_MAX];
+        uint8_t plain[TESLA_PB_PAYLOAD_MAX];
         size_t resp_len = 0, plain_len = 0;
         uint32_t fault = 0;
         VCSEC_FromVCSECMessage from;
         esp_err_t e;
 
-        e = recv_for_route(resp, sizeof(resp), &resp_len, RESPONSE_TIMEOUT_MS, routing);
+        e = recv_for_route(s_client_response, sizeof(s_client_response), &resp_len,
+                           RESPONSE_TIMEOUT_MS, routing);
         if (e != ESP_OK) {
             ESP_LOGW(TAG, "no status response (attempt %d/3)", i + 1);
             break;
         }
         if (tesla_session_process_response(sess, (const uint8_t *)vin, strlen(vin),
                                            request_hash, req_hash_len,
-                                           resp, resp_len,
+                                           s_client_response, resp_len,
                                            plain, sizeof(plain), &plain_len,
                                            &fault) != 0) {
             ESP_LOGW(TAG, "status response rejected (attempt %d/3)", i + 1);
@@ -332,8 +332,7 @@ static esp_err_t refresh_status(tesla_session_t *sess, const char *vin,
 // lingers to be misrouted or to overflow the queue at the next poll.
 static void drain_rxq(void)
 {
-    rx_frame_t f;
-    while (s_rxq != NULL && xQueueReceive(s_rxq, &f, 0) == pdTRUE) {
+    while (s_rxq != NULL && xQueueReceive(s_rxq, &s_client_task_frame, 0) == pdTRUE) {
     }
 }
 
@@ -388,7 +387,7 @@ static void client_task(void *arg)
         tesla_session_t sess;
         tesla_session_init(&sess, TESLA_DOMAIN_VEHICLE_SECURITY, now_ms);
         {
-            uint8_t routing[16], challenge[16], req[400], resp[320];
+            uint8_t routing[16], challenge[16], req[400];
             size_t req_len = 0, resp_len = 0;
             esp_fill_random(routing, sizeof(routing));
             esp_fill_random(challenge, sizeof(challenge));
@@ -402,13 +401,13 @@ static void client_task(void *arg)
                 ESP_LOGW(TAG, "handshake send failed");
                 goto link_down;
             }
-            if (recv_for_route(resp, sizeof(resp), &resp_len,
+            if (recv_for_route(s_client_response, sizeof(s_client_response), &resp_len,
                                RESPONSE_TIMEOUT_MS, routing) != ESP_OK) {
                 ESP_LOGW(TAG, "no handshake response (car asleep?)");
                 goto link_down;
             }
             if (tesla_session_handshake(&sess, &key, (const uint8_t *)vin, strlen(vin),
-                                        challenge, resp, resp_len,
+                                        challenge, s_client_response, resp_len,
                                         hw_rng, NULL) != 0) {
                 ESP_LOGW(TAG, "handshake rejected (key not enrolled?)");
                 goto link_down;

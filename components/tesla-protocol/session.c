@@ -648,3 +648,74 @@ tesla_vcsec_phase_t tesla_vcsec_ingest(const VCSEC_FromVCSECMessage *m)
         return TESLA_VCSEC_DONE;
     }
 }
+
+tesla_whitelist_phase_t tesla_vcsec_whitelist_ingest(
+    const VCSEC_FromVCSECMessage *m, uint32_t *info_out)
+{
+    if (info_out != NULL) {
+        *info_out = UINT32_MAX;
+    }
+    if (m == NULL) {
+        return TESLA_WHITELIST_PENDING;
+    }
+
+    switch (m->which_sub_message) {
+    case VCSEC_FromVCSECMessage_nominalError_tag:
+        return TESLA_WHITELIST_ERROR;
+
+    case VCSEC_FromVCSECMessage_commandStatus_tag: {
+        const VCSEC_CommandStatus *cs = &m->sub_message.commandStatus;
+
+        // A parent WAIT is the car's "awaiting tap" response. Parent ERROR
+        // is terminal failure even if a malformed payload happens to carry a
+        // whitelist submessage. Neither may prove enrollment.
+        if (cs->operationStatus == VCSEC_OperationStatus_E_OPERATIONSTATUS_WAIT) {
+            return TESLA_WHITELIST_PENDING;
+        }
+        if (cs->operationStatus == VCSEC_OperationStatus_E_OPERATIONSTATUS_ERROR) {
+            return TESLA_WHITELIST_ERROR;
+        }
+        if (cs->operationStatus != VCSEC_OperationStatus_E_OPERATIONSTATUS_OK) {
+            // Future enum values are not proof of success; wait for a known
+            // terminal result rather than optimistically enrolling.
+            return TESLA_WHITELIST_PENDING;
+        }
+
+        if (cs->which_sub_message !=
+            (pb_size_t)VCSEC_CommandStatus_whitelistOperationStatus_tag) {
+            // Generic CommandStatus, signedMessageStatus, and an absent
+            // submessage are not the whitelist result we need.
+            return TESLA_WHITELIST_PENDING;
+        }
+
+        const VCSEC_WhitelistOperation_status *ws =
+            &cs->sub_message.whitelistOperationStatus;
+        if (info_out != NULL) {
+            *info_out = (uint32_t)ws->whitelistOperationInformation;
+        }
+        if (ws->operationStatus == VCSEC_OperationStatus_E_OPERATIONSTATUS_WAIT) {
+            return TESLA_WHITELIST_PENDING;
+        }
+        if (ws->operationStatus != VCSEC_OperationStatus_E_OPERATIONSTATUS_OK) {
+            // Nested ERROR (and any future non-OK status) is terminal failure.
+            return TESLA_WHITELIST_ERROR;
+        }
+        if (ws->whitelistOperationInformation ==
+                VCSEC_WhitelistOperation_information_E_WHITELISTOPERATION_INFORMATION_NONE ||
+            ws->whitelistOperationInformation ==
+                VCSEC_WhitelistOperation_information_E_WHITELISTOPERATION_INFORMATION_ATTEMPTING_TO_ADD_KEY_THAT_IS_ALREADY_ON_THE_WHITELIST) {
+            return TESLA_WHITELIST_SUCCESS;
+        }
+        // Every known non-NONE information value is a rejection (including
+        // UI denied, tap timeout, and cancelled). Unknown future values also
+        // fail closed: they cannot prove this key was enrolled.
+        return TESLA_WHITELIST_ERROR;
+    }
+
+    case VCSEC_FromVCSECMessage_vehicleStatus_tag:
+    default:
+        // Status, empty, and other application messages are unrelated to the
+        // whitelist operation and must not complete enrollment.
+        return TESLA_WHITELIST_PENDING;
+    }
+}

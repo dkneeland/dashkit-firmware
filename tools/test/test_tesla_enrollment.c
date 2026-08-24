@@ -115,7 +115,7 @@ static void test_keygen(void)
 static void test_enrollment(void)
 {
     tesla_keypair_t key;
-    uint8_t out[320];
+    uint8_t out[600];
     size_t out_len = 0;
 
     CHECK(tesla_keypair_generate(&key, dummy_rng, NULL) == 0, "gen key for enrollment");
